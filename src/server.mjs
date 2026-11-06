@@ -676,8 +676,13 @@ function attachBackendChain(trace, payload) {
   if (!index || !payload.url) return
   let pathname
   try { pathname = new URL(payload.url, 'http://localhost').pathname } catch { return }
+  const reqNode = trace.nodes.find((n) => n.kind === 'request' && n.meta && n.meta.reqId === payload.reqId)
   const route = adapter.matchRoute(index.routes, String(payload.method || 'GET').toUpperCase(), pathname)
-  if (!route) return
+  if (!route) {
+    // 索引快照里没有这条路由：可能是新加接口没重载索引，或路径拼写/Host 不同
+    if (reqNode && reqNode.meta) reqNode.meta.unmatched = true
+    return
+  }
   const routeKey = `${route.method} ${route.path}`
   if (!treeCache.has(routeKey)) treeCache.set(routeKey, adapter.buildCallTree(index, route, CONFIG.chainDepth))
   const tree = treeCache.get(routeKey)
@@ -686,7 +691,7 @@ function attachBackendChain(trace, payload) {
   const resp = trace.nodes.find((n) => n.id === `${trace.id}#resp${payload.reqId}`)
   const linkStatus = resp && resp.status === 'error' ? 'error' : 'ok'
   const routeInfo = { method: route.method, path: route.path, file: route.file, line: route.line }
-  const reqNode = trace.nodes.find((n) => n.kind === 'request' && n.meta && n.meta.reqId === payload.reqId)
+  if (reqNode && reqNode.meta) delete reqNode.meta.unmatched
   const reqParams = (reqNode && reqNode.meta.params) || requestParams(payload)
   const pathVars = pathParamsOf(route.path, pathname)
   if (Object.keys(pathVars).length) {

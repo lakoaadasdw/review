@@ -1274,6 +1274,11 @@ function renderDetail(trace) {
   if (meta.file) kv.push(['源码', `${meta.file}${meta.line ? `:${meta.line}` : ''}`])
   if (meta.frame?.file) kv.push(['触发处', `${meta.frame.file}:${meta.frame.line}`])
   if (meta.message) kv.push(['错误', meta.message])
+  if (node.kind === 'request') {
+    kv.push(['索引', meta.unmatched
+      ? '未在索引中找到（可能是新加接口没重载索引，或路径/Host 不一致）'
+      : '已匹配后端路由'])
+  }
   {
     const errInfo = analyzeErrors(trace, flow)
     if (errInfo) {
@@ -1303,7 +1308,7 @@ function renderDetail(trace) {
     }</pre>`
     : ''
 
-  body.innerHTML = `<div class="kv">${kv.map(([k, v]) => `<b>${escapeHtml(k)}</b><span>${k === '状态' ? v : escapeHtml(v)}</span>`).join('')}</div>`
+  body.innerHTML = `<div class="kv">${kv.map(([k, v]) => `<b>${escapeHtml(k)}</b><span>${k === '状态' ? v : (k === '索引' && String(v).startsWith('未在索引') ? `<b style="color:#d29922">${escapeHtml(v)}</b>` : escapeHtml(v))}</span>`).join('')}</div>`
     + paramHtml
     + occHtml
     + renderBody(meta, node.id)

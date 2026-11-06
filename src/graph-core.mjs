@@ -30,19 +30,46 @@ function routeScore(path) {
   return path.split('/').filter(Boolean).length * 10 - (path.match(/\{/g) || []).length
 }
 
+// 路由正则在启动时按 path 预编译一次（原来每次请求都 new RegExp）
+const RE_CACHE = new Map()
+function pathRe(path) {
+  let re = RE_CACHE.get(path)
+  if (!re) {
+    re = pathToRegExp(path)
+    RE_CACHE.set(path, re)
+  }
+  return re
+}
+
+// 按 HTTP method 分组，避免每次请求遍历全量路由；以 routes 数组为键缓存
+const BY_METHOD = new WeakMap()
+function routesByMethod(routes) {
+  let map = BY_METHOD.get(routes)
+  if (!map) {
+    map = new Map()
+    for (const route of routes) {
+      const key = route.method || 'GET'
+      if (!map.has(key)) map.set(key, [])
+      map.get(key).push(route)
+    }
+    BY_METHOD.set(routes, map)
+  }
+  return map
+}
+
 /** 用请求 path 匹配静态路由；失败时再试去掉 /api 前缀。越具体越优先。 */
 export function matchRoute(routes, httpMethod, pathname) {
+  if (!routes || !routes.length) return null
+  const groups = routesByMethod(routes)
+  const pool = (groups.get(httpMethod) || []).concat(groups.get('ANY') || [])
+  const stripped = pathname.replace(/^\/api(?=\/)/, '')
   const candidates = []
-  for (const route of routes) {
-    if (route.method !== httpMethod && route.method !== 'ANY') continue
-    const re = pathToRegExp(route.path)
-    if (re.test(pathname)) candidates.push(route)
-    else {
-      const stripped = pathname.replace(/^\/api(?=\/)/, '')
-      if (re.test(stripped)) candidates.push(route)
-    }
+  for (const route of pool) {
+    const re = pathRe(route.path)
+    if (re.test(pathname) || (stripped !== pathname && re.test(stripped))) candidates.push(route)
   }
   if (!candidates.length) return null
+  if (candidates.length === 1) return candidates[0]
   candidates.sort((a, b) => routeScore(b.path) - routeScore(a.path))
   return candidates[0]
 }
