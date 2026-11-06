@@ -5,7 +5,7 @@
 
 后端部分以「源码卡片」呈现：每个方法展示完整代码，**方法里哪一行调用了别的方法，就从那一行拉一条线**接到被调方法的完整源码卡片；异常链路整条变红，并标出**最早失败的根因**。用于人工快速审阅、定位 bug。
 
-当前版本：v0.23（扫描器支持 IPv6 回环、无 Chrome 时自动拉起调试浏览器；调用图 + 源码卡片 + 重复请求折叠 + 自由拖动 + 缩放 + 多接口分组与折叠 + 响应体 JSON 树 + MyBatis XML 映射 + 异常根因标记 + 接口层失败隐藏方法链 + 前端调用链 + 流向高光 + **多语言适配器**：`graph-core` 语言无关图逻辑 + `adapters/java`、`adapters/python`，`--lang auto|java|python` 自动识别；Python 走 stdlib `ast` 静态解析，Python 见 `docs/screenshot-python.png`）。
+当前版本：v0.24（扫描器支持 IPv6 回环、无 Chrome 时自动拉起调试浏览器；调用图 + 源码卡片 + 重复请求折叠 + 自由拖动 + 缩放 + 多接口分组与折叠 + 响应体 JSON 树 + MyBatis XML 映射 + 异常根因标记 + 接口层失败隐藏方法链 + 前端调用链 + 流向高光 + **多语言适配器**：`graph-core` 语言无关图逻辑 + `adapters/java`、`adapters/python`，`--lang auto|java|python` 自动识别；Python 走 stdlib `ast` 静态解析（含原生 SQL 字面量卡片），Python 见 `docs/screenshot-python.png`、`docs/screenshot-python-sql.png`）。
 
 ## 它是怎么拿到数据的
 
@@ -88,6 +88,7 @@ node src/server.mjs --backend <local-path> --depth 4
 22. **调用行下方标注实参**：展开方法卡片后，每条「发生了调用」的代码行下面会多出一行小标签，直接把这次请求真正传进去的实参写出来（`status=1`、`platform=WEB`、`page=1`、`size=20`），不用点开任何面板；同一行里有多个调用时按 `addCallee()` 分组显示。值来自请求的 query / body / path，并沿调用链逐层替换（比如 `parseStatus(status)` 会显示成 `parseStatus(1)`）；解析不出来的实参显示成灰色表达式，表示「这次没对上」，而不是假装有值。
 23. **接口 → 实现 → Mapper XML**：Service/Mapper 是接口时，会顺着 `implements` 跳到唯一实现类继续展开；Mapper 接口方法再按 MyBatis `namespace + id` 换成 XML 里的 `<select>/<insert>/<update>/<delete>`（`<include refid>` 会展开）。所以「数据从哪查回来的」能一路看到具体 SQL，含 `<if>` 动态条件。
 18. **Python（FastAPI / Flask）适配**：`--lang auto|python` 选择适配器；Python 侧用 stdlib `ast` 静态 dump（`src/py/ast_dump.py`，只读源码，不执行）→ `src/adapters/python.mjs` 还原路由与函数调用链。支持 `APIRouter(prefix=)` / `FastAPI()` / `Blueprint`、`include_router(prefix=)` 叠加、from-import 与模块别名解析、方法与函数同名解析；`getattr`/DI/动态路由标为未解析，不做猜测。
+19. **Python 原生 SQL 字面量**：`cursor.execute("SELECT …")`、SQLAlchemy `text("…")`、`sql()` / `literal_column()` 这类**字面量** SQL 会被提取成独立的 `SQL@L<行号>` 卡片（`SQL` 徽标），挂在调用它的函数下面，点开就是那段 SQL；f-string 的动态段显示为 `{}`。只认字面量，ORM 的 `select(Model).where(...)` 暂不还原（下一步可做表名反推或运行时 hook）。
 16. **接口层失败不追方法链（按接口判断）**：某个接口最近一次响应失败（请求没发出去，或响应 4xx/5xx）时，**只隐藏这个接口自己的方法树**，流程条上它的响应节点标「到此为止」；同一 trace 里已经成功的接口照常展示方法链。左下提示条会说明「失败接口的方法链已隐藏；成功接口仍展示方法树」；想连失败的也一起看，点工具条「显示方法树」。
 
 ## 目录

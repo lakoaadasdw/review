@@ -18,6 +18,8 @@ const ROUTE_METHODS = {
 }
 const ROUTE_ANY = new Set(['route', 'api_route'])
 const VENV_SKIP = new Set(['__pycache__', '.venv', 'venv', 'env', '.git', 'node_modules', 'site-packages'])
+// 缓存格式版本：扩展解析能力（例如新增 SQL 抽取）时 +1，让旧缓存自然失效
+const CACHE_VERSION = '2'
 
 /** 向上最多 4 层找 Python 项目标记；root 本身也可以是项目根 */
 export function detectPython(root) {
@@ -142,7 +144,7 @@ function dirFingerprint(root) {
     }
   }
   parts.sort()
-  return createHash('sha1').update(parts.join(String.fromCharCode(10))).digest('hex')
+  return createHash('sha1').update(CACHE_VERSION + String.fromCharCode(10) + parts.join(String.fromCharCode(10))).digest('hex')
 }
 
 function cachePathFor(root) {
@@ -330,7 +332,33 @@ export function indexPythonProject(root, options = {}) {
       const meta = fromId ? methods.get(fromId) : null
       if (!meta) continue
       const seen = new Set()
+      const sqlSeen = new Set()
       for (const call of fn.calls || []) {
+        // 原生 SQL 字面量：生成一个 SQL 叶子节点，界面表现与 MyBatis XML 节点一致
+        // 同一条 SQL 可能同时挂在 text("…") 和它的外层 execute(…) 上，按 SQL 内容去重
+        if (call.sql && !sqlSeen.has(call.sql.replace(/\s+/g, ' ').trim())) {
+          sqlSeen.add(call.sql.replace(/\s+/g, ' ').trim())
+          const sqlId = `${file.file}::sql@${call.lineno}`
+          if (!methods.has(sqlId)) {
+            methods.set(sqlId, {
+              id: sqlId,
+              cls: 'SQL',
+              method: `SQL@L${call.lineno}`,
+              file: file.file,
+              startLine: call.lineno,
+              endLine: call.lineno,
+              code: call.sql,
+              xml: true,
+              xmlTag: 'sql',
+              calls: [],
+            })
+          }
+          if (!seen.has(`${sqlId}:${call.lineno}`)) {
+            seen.add(`${sqlId}:${call.lineno}`)
+            meta.calls.push({ toKey: sqlId, callLine: call.lineno, snippet: 'SQL' })
+            edges++
+          }
+        }
         const toKey = resolveCall(file.file, call, fn.cls)
         if (!toKey || toKey === fromId || seen.has(`${toKey}:${call.lineno}`)) continue
         seen.add(`${toKey}:${call.lineno}`)

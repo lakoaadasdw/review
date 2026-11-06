@@ -26,3 +26,23 @@ async def me(user: dict = Depends(auth_service.current_user)) -> dict:
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
+
+
+@router.get("/conversations")
+async def list_conversations(limit: int = 20) -> list:
+    """演示：原生 SQL 字面量（text() 包裹）——静态可抓"""
+    rows = await db.fetch_all(
+        text("SELECT id, status FROM conversations WHERE status = :status ORDER BY id DESC LIMIT :limit"),
+        {"status": "open", "limit": limit},
+    )
+    return rows
+
+
+async def touch_conversation(cid: int) -> None:
+    """演示：cursor.execute 原生 SQL"""
+    await cursor.execute("UPDATE conversations SET status = %s WHERE id = %s", ("open", cid))
+
+
+async def purge_conversation(cid: int) -> None:
+    """演示：f-string 拼出来的 SQL（动态部分用 {} 占位）"""
+    await conn.execute(f"DELETE FROM conversations WHERE id = {cid}")

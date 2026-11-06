@@ -6,6 +6,7 @@
 import ast
 import json
 import os
+import re
 import sys
 
 SKIP_DIRS = {
@@ -42,13 +43,56 @@ def expr(node, limit=160):
     return text[:limit]
 
 
+SQL_START = re.compile(r"(?is)^\s*(select|insert|update|delete|replace|with|merge)\b")
+
+
+def sql_text(node):
+    """把「SQL 字面量」从参数里抽出来：text("...") / "..." / f"..." 都支持。"""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            else:
+                parts.append("{}")
+        return "".join(parts)
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Name) and node.func.id in ("text", "literal_column", "sql"):
+            if node.args:
+                return sql_text(node.args[0])
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ("text", "literal_column", "sql"):
+            if node.args:
+                return sql_text(node.args[0])
+    return None
+
+
+def sql_of_call(node):
+    """调用参数里带 SQL 就返回 SQL 文本（只认以 select/insert/... 开头的字符串）。"""
+    candidates = list(node.args[:2]) + [kw.value for kw in node.keywords if kw.arg in ("sql", "query", "statement", "stmt")]
+    for arg in candidates:
+        text = sql_text(arg)
+        if not text:
+            continue
+        text = text.strip()
+        if len(text) < 8 or not SQL_START.search(text):
+            continue
+        return text[:4000]
+    return None
+
+
 def call_info(node):
     func = node.func
+    info = {"kind": "other", "base": None, "name": expr(func, 80), "lineno": node.lineno}
     if isinstance(func, ast.Attribute):
-        return {"kind": "attr", "base": expr(func.value, 80), "name": func.attr, "lineno": node.lineno}
-    if isinstance(func, ast.Name):
-        return {"kind": "name", "base": None, "name": func.id, "lineno": node.lineno}
-    return {"kind": "other", "base": None, "name": expr(func, 80), "lineno": node.lineno}
+        info = {"kind": "attr", "base": expr(func.value, 80), "name": func.attr, "lineno": node.lineno}
+    elif isinstance(func, ast.Name):
+        info = {"kind": "name", "base": None, "name": func.id, "lineno": node.lineno}
+    sql = sql_of_call(node)
+    if sql:
+        info["sql"] = sql
+    return info
 
 
 def decorator_info(dec):

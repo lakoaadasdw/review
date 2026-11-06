@@ -975,7 +975,7 @@ function renderGraph() {
           <div class="mhead" data-act="toggle">
             <span class="mchev">${open ? '▾' : '▸'}</span>
             <span class="mname">${escapeHtml(n.cls)}.${escapeHtml(n.method)}()</span>
-            ${n.xml ? '<span class="mtag">XML</span>' : ''}${parentChip}
+            ${n.xml ? `<span class="mtag">${n.xmlTag === 'sql' ? 'SQL' : 'XML'}</span>` : ''}${parentChip}
             <span class="mfile">${escapeHtml(baseName(n.file))}:${n.startLine}</span>
             <span class="mcall">${callableCount ? `${callableCount} 处调用` : ''}</span>
           </div>
@@ -1083,6 +1083,15 @@ function renderGraph() {
     nodesEl.querySelectorAll('.mcard').forEach((card) => {
       card.addEventListener('mouseenter', () => focusKey(card.dataset.key))
       card.addEventListener('mouseleave', () => focusKey(null))
+      // 点卡片本体（不是标题栏、不是调用行）也选中并展示详情，否则折叠卡片点了没反应
+      card.addEventListener('click', (e) => {
+        if (e.target.closest('.mhead, a, button, .ln.callable, .mparent')) return
+        const id = card.dataset.id
+        if (!id) return
+        view.selected = id
+        renderGraph()
+        renderDetail(trace)
+      })
     })
   }
 
@@ -1213,8 +1222,8 @@ function renderDetail(trace) {
       const { m, prefix, backend } = hit
       const calls = m.calls.map((c) => `<div class="callrow"><code>L${c.line}</code> → <a href="#" data-key="${escapeHtml(prefix + c.toKey)}">${escapeHtml(c.toKey)}()</a></div>`).join('') || '<p class="muted">没有解析到方法内调用</p>'
       body.innerHTML = `<div class="kv">
-        <b>类型</b><span>${m.xml ? 'MyBatis XML 语句' : '后端方法'}</span>
-        <b>方法</b><span>${escapeHtml(m.cls)}.${escapeHtml(m.method)}()</span>
+        <b>类型</b><span>${m.xml ? (m.xmlTag === 'sql' ? 'SQL 语句' : 'MyBatis XML 语句') : '后端方法'}</span>
+        <b>方法</b><span>${m.xmlTag === 'sql' ? escapeHtml(m.method) : `${escapeHtml(m.cls)}.${escapeHtml(m.method)}()`}</span>
         <b>文件</b><span>${escapeHtml(baseName(m.file))}</span>
         <b>行号</b><span>${m.startLine}–${m.endLine}</span>
         <b>深度</b><span>${m.depth}</span>
