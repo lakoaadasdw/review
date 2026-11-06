@@ -97,6 +97,12 @@ async function loadBackend() {
     state.backend.summary = adapter.summarize(index)
     state.backend.adapter = adapter.id
     state.backend.error = null
+    // 未解析调用诊断（只把「项目内真断」的 actionable 暴露给 UI，最多 200 条）
+    const diag = index.diagnostics || null
+    state.backend.diagnostics = diag ? {
+      counts: { actionable: diag.actionable || 0, external: diag.external || 0, generated: diag.generated || 0 },
+      actionable: (diag.unresolved || []).filter((u) => u.kind === 'actionable').slice(0, 200),
+    } : null
     treeCache.clear()
   } catch (err) {
     index = null
@@ -334,7 +340,7 @@ function ingest(payload) {
         label: `${payload.method} ${shortUrl(payload.url)}`,
         status: 'ok',
         at: payload.at,
-        meta: { url: payload.url, method: payload.method, reqId: payload.reqId },
+        meta: { url: payload.url, method: payload.method, reqId: payload.reqId, params: requestParams(payload) },
       })
       addEdge(trace, parent, node.id)
       lastRequestNode = node.id
@@ -412,6 +418,260 @@ async function resolveHandlerSource(trace) {
   } catch {}
 }
 
+const MASK_HEADERS = new Set(['authorization', 'cookie', 'set-cookie', 'x-token', 'x-auth-token'])
+
+/** 从钩子上报里抽出「这次请求带了什么参数」：query / body(JSON 顶层) / headers */
+function requestParams(payload) {
+  const out = { query: {}, body: {}, path: {}, headers: {} }
+  try {
+    const u = new URL(payload.url, 'http://localhost')
+    for (const [k, v] of u.searchParams) out.query[k] = v
+  } catch {}
+  const raw = typeof payload.body === 'string' ? payload.body.trim() : ''
+  if (raw) {
+    try {
+      const json = JSON.parse(raw)
+      if (json && typeof json === 'object' && !Array.isArray(json)) {
+        for (const [k, v] of Object.entries(json).slice(0, 40)) {
+          out.body[k] = v && typeof v === 'object' ? JSON.stringify(v).slice(0, 120) : String(v)
+        }
+      } else {
+        out.body['(body)'] = (Array.isArray(json) ? `[${json.length} 项]` : String(json)).slice(0, 120)
+      }
+    } catch {
+      out.body['(raw)'] = raw.slice(0, 160)
+    }
+  }
+  const hs = payload.headers && typeof payload.headers === 'object' ? payload.headers : {}
+  for (const [k, v] of Object.entries(hs).slice(0, 24)) {
+    const lk = String(k).toLowerCase()
+    if (lk === 'x-apiflow-trace') continue
+    const val = MASK_HEADERS.has(lk) ? '••••' : String(v).slice(0, 160)
+    if (!out.headers[lk]) out.headers[lk] = val
+  }
+  return out
+}
+
+/** /admin/orders/{id} + /admin/orders/42 → {id: '42'} */
+function pathParamsOf(routePath, pathname) {
+  const out = {}
+  const tpl = String(routePath || '').split('/').filter(Boolean)
+  const act = String(pathname || '').split('/').filter(Boolean)
+  const n = Math.min(tpl.length, act.length)
+  const t = tpl.slice(tpl.length - n)
+  const a = act.slice(act.length - n)
+  for (let i = 0; i < n; i++) {
+    const m = t[i].match(/^\{(.+?)\}$/)
+    if (m) { try { out[m[1]] = decodeURIComponent(a[i]) } catch { out[m[1]] = a[i] } }
+  }
+  return out
+}
+
+// —— 调用点实参解析：把「请求参数/上游实参」映射到每个调用的形参上 ——
+function splitTopLevel(s) {
+  const out = []
+  let depth = 0
+  let quote = null
+  let cur = ''
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (quote) {
+      cur += ch
+      if (ch === quote && s[i - 1] !== '\\') quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue }
+    if ('([{<'.includes(ch)) depth++
+    else if (')]}>'.includes(ch)) depth--
+    if (ch === ',' && depth === 0) { out.push(cur.trim()); cur = ''; continue }
+    cur += ch
+  }
+  if (cur.trim()) out.push(cur.trim())
+  return out
+}
+
+function formalsOf(code, method) {
+  const text = String(code || '')
+  const head = method + '('
+  const at = text.indexOf(head)
+  if (at < 0) return []
+  let depth = 0
+  let quote = null
+  let args = ''
+  for (let i = at + head.length - 1; i < text.length; i++) {
+    const ch = text[i]
+    if (quote) { args += ch; if (ch === quote && text[i - 1] !== '\\') quote = null; continue }
+    if (ch === '"' || ch === "'") { quote = ch; args += ch; continue }
+    if (ch === '(') { depth++; if (depth === 1) continue }
+    else if (ch === ')') { depth--; if (!depth) break }
+    args += ch
+  }
+  if (!args) return []
+  return splitTopLevel(args).map((part) => {
+    const clean = part.replace(/@[\w.]+(?:\s*\([^)]*\))?/g, ' ').replace(/\bfinal\b/g, ' ').trim()
+    const words = clean.split(/\s+/).filter(Boolean)
+    return words.length ? words[words.length - 1].replace(/,$/, '') : null
+  }).filter(Boolean)
+}
+
+function callArgsAt(lines, lineNo, calleeName, startLine) {
+  const idx = lineNo - startLine
+  if (idx < 0 || idx >= lines.length) return null
+  const text = lines.slice(idx, idx + 4).join('\n')
+  const at = text.indexOf(calleeName + '(')
+  if (at < 0) return null
+  const rest = text.slice(at + calleeName.length)
+  let depth = 0
+  let quote = null
+  for (let i = 0; i < rest.length; i++) {
+    const ch = rest[i]
+    if (quote) { if (ch === quote && rest[i - 1] !== '\\') quote = null; continue }
+    if (ch === '"' || ch === "'") { quote = ch; continue }
+    if (ch === '(') depth++
+    else if (ch === ')') { depth--; if (!depth) return splitTopLevel(rest.slice(1, i)) }
+  }
+  return null
+}
+
+function resolveArg(expr, scope) {
+  const e = String(expr || '').trim()
+  if (!e) return { expr: e, value: null, resolved: false }
+  const str = e.match(/^(["'])([\s\S]*)\1$/)
+  if (str) return { expr: e, value: str[2], resolved: true }
+  if (/^-?\d+(\.\d+)?$/.test(e) || /^(true|false|null)$/.test(e)) return { expr: e, value: e, resolved: true }
+  const call = e.match(/^([A-Za-z_$][\w$]*)\s*\(([\s\S]*)\)$/)
+  if (call) {
+    const inner = splitTopLevel(call[2])[0]
+    const r = resolveArg(inner, scope)
+    return { expr: e, value: r.resolved ? call[1] + '(' + r.value + ')' : null, resolved: r.resolved }
+  }
+  if (/^[A-Za-z_$][\w$]*$/.test(e) && scope.has(e)) return { expr: e, value: scope.get(e), resolved: true }
+  return { expr: e, value: null, resolved: false }
+}
+
+/** 基于本次请求参数，给每条调用边补上「调用点实参」（形参名 → 值） */
+function annotateArgs(tree, params) {
+  const scope0 = new Map()
+  const put = (obj) => { for (const [k, v] of Object.entries(obj || {})) if (!scope0.has(k)) scope0.set(k, String(v)) }
+  put(params && params.path)
+  put(params && params.query)
+  put(params && params.body)
+  const nodes = new Map(tree.nodes.map((n) => [n.id, n]))
+  const root = nodes.get(tree.rootId)
+  const scopes = new Map()
+  if (root) {
+    const m = new Map()
+    for (const name of formalsOf(root.code, root.method)) if (scope0.has(name)) m.set(name, scope0.get(name))
+    scopes.set(root.id, m)
+  }
+  const queue = root ? [root.id] : []
+  const seen = new Set(queue)
+  const out = []
+  while (queue.length) {
+    const fromId = queue.shift()
+    const from = nodes.get(fromId)
+    if (!from) continue
+    const lines = String(from.code || '').split('\n')
+    const callerScope = scopes.get(fromId) || scope0
+    for (const e of tree.edges) {
+      if (e.from !== fromId) continue
+      const child = nodes.get(e.to)
+      if (!child) continue
+      const raw = callArgsAt(lines, e.line, child.method, from.startLine)
+      const formals = formalsOf(child.code, child.method)
+      const args = []
+      const childScope = new Map(callerScope)
+      if (raw) {
+        raw.forEach((expr, i) => {
+          const r = resolveArg(expr, callerScope)
+          const name = formals[i] || 'arg' + (i + 1)
+          args.push({ name, expr: r.expr, value: r.value, resolved: r.resolved })
+          if (r.resolved) childScope.set(name, r.value)
+        })
+      }
+      out.push(Object.assign({}, e, args.length ? { args } : {}))
+      if (!scopes.has(e.to)) {
+        scopes.set(e.to, childScope)
+        if (!seen.has(e.to)) { seen.add(e.to); queue.push(e.to) }
+      }
+    }
+  }
+  for (const e of tree.edges) if (!out.some((x) => x.from === e.from && x.to === e.to && x.line === e.line)) out.push(e)
+
+  // 卡内所有调用行都给一份实参注解：就算被调方法没解析出来（接口/外部类），
+  // 也能在调用行下面看到「这次传进去的是什么」。
+  for (const n of tree.nodes) {
+    const scope = scopes.get(n.id)
+    if (!scope) continue
+    const lines = String(n.code || '').split(String.fromCharCode(10))
+    const list = []
+    for (const c of n.calls || []) {
+      const callee = String(c.toKey || '').split('.').pop()
+      const raw = callee ? callArgsAt(lines, c.line, callee, n.startLine) : null
+      const child = nodes.get(c.toKey)
+      const cformals = child ? formalsOf(child.code, child.method) : []
+      const args = (raw || []).map((expr, i) => {
+        const r = resolveArg(expr, scope)
+        return { name: cformals[i] || '', expr: r.expr, value: r.value, resolved: r.resolved, index: i }
+      })
+      if (args.length) list.push({ line: c.line, callee, args })
+    }
+    if (list.length) n.callArgs = list
+  }
+
+  // 再扫一遍「调用表达式」：即使是接口/实现类（没进方法树）的调用，
+  // 只要它在索引里能按方法名找到，就把这一行的实参也解析出来。
+  const byName = new Map()
+  if (index && index.methods) {
+    for (const m of index.methods.values()) if (!byName.has(m.method)) byName.set(m.method, m)
+  }
+  for (const n of tree.nodes) {
+    const scope = scopes.get(n.id)
+    if (!scope) continue
+    const lines = String(n.code || '').split(String.fromCharCode(10))
+    const merged = new Map((n.callArgs || []).map((x) => [x.line, (x.items || [{ callee: x.callee || '', args: x.args || [] }]).slice()]))
+    for (let i = 0; i < lines.length; i++) {
+      const text = lines[i]
+      if (!text.includes('(')) continue
+      if (/^\s*(public|private|protected|static|class|interface|if|for|while|switch|catch)/.test(text)) continue
+      const re = /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(/g
+      let m
+      while ((m = re.exec(text))) {
+        const callee = m[1].split('.').pop()
+        const def = byName.get(callee)
+        if (!def) continue
+        const start = m.index + m[0].length - 1
+        let depth = 0
+        let quote = null
+        let body = null
+        for (let k = start; k < text.length; k++) {
+          const ch = text[k]
+          if (quote) { if (ch === quote && text[k - 1] !== String.fromCharCode(92)) quote = null; continue }
+          if (ch === '"' || ch === "'") { quote = ch; continue }
+          if (ch === '(') depth++
+          else if (ch === ')') { depth--; if (!depth) { body = text.slice(start + 1, k); break } }
+        }
+        if (body === null) continue
+        const formals = formalsOf(def.code, def.method)
+        const explicit = splitTopLevel(body)
+        if (!explicit.length) continue
+        const args = explicit.map((expr, idx) => {
+          const r = resolveArg(expr, scope)
+          return { name: formals[idx] || '', expr: r.expr, value: r.value, resolved: r.resolved }
+        })
+        const lineNo = n.startLine + i
+        const bucket = merged.get(lineNo) || []
+        if (!bucket.some((b) => b.callee === callee)) bucket.push({ line: lineNo, callee, args })
+        merged.set(lineNo, bucket)
+      }
+    }
+    if (merged.size) {
+      n.callArgs = [...merged.entries()].sort((a, b) => a[0] - b[0]).map(([line, bucket]) => ({ line, items: bucket }))
+    }
+  }
+  return out
+}
+
 function attachBackendChain(trace, payload) {
   if (!index || !payload.url) return
   let pathname
@@ -426,13 +686,21 @@ function attachBackendChain(trace, payload) {
   const resp = trace.nodes.find((n) => n.id === `${trace.id}#resp${payload.reqId}`)
   const linkStatus = resp && resp.status === 'error' ? 'error' : 'ok'
   const routeInfo = { method: route.method, path: route.path, file: route.file, line: route.line }
+  const reqNode = trace.nodes.find((n) => n.kind === 'request' && n.meta && n.meta.reqId === payload.reqId)
+  const reqParams = (reqNode && reqNode.meta.params) || requestParams(payload)
+  const pathVars = pathParamsOf(route.path, pathname)
+  if (Object.keys(pathVars).length) {
+    reqParams.path = Object.assign({}, reqParams.path, pathVars)
+    if (reqNode) reqNode.meta.params = reqParams
+  }
+  const edges = annotateArgs(tree, reqParams)
   // 一条 trace 里可能打了多个接口（轮询/多请求）：每个不同的路由各挂一棵方法树
   if (!trace.backends.some((b) => b.route.method === routeInfo.method && b.route.path === routeInfo.path)) {
     trace.backends.push({
       from: resp ? resp.id : lastRequestNode,
       rootId: tree.rootId,
       nodes: tree.nodes,
-      edges: tree.edges,
+      edges,
       route: routeInfo,
       status: linkStatus,
     })

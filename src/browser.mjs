@@ -31,12 +31,10 @@ export function defaultUserDataDir() {
 let childPid = null
 
 export async function browserStatus(port) {
-  try {
-    const v = await CDP.version(port)
-    return { running: true, port, version: v?.Browser || null, reused: true }
-  } catch {
-    return { running: false, port, version: null }
-  }
+  // CDP.version 失败时会返回 null，不能只看有没有抛异常（否则 Chrome 已退出也误判为 running）
+  const v = await CDP.version(port).catch(() => null)
+  if (!v || !v.webSocketDebuggerUrl) return { running: false, port, version: null }
+  return { running: true, port, version: v?.Browser || null, reused: true }
 }
 
 /** 已有调试端口就直接复用；否则 spawn 一个带调试端口的 Chrome 并等它就绪。 */

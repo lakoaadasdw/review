@@ -13,6 +13,7 @@ const FE_LINE = 13
 const CARD_W = 470
 const HEAD_H = 28
 const LINE_H = 15
+const ARG_LINE_H = 19
 const CODE_PAD = 8
 const COL_GAP = 90
 const GRAPH_TOP = 132   // 顶部流程条与分组之间留一条走线通道（y≈112）
@@ -20,8 +21,16 @@ const CARD_GAP = 14
 const GROUP_HEAD_H = 32
 const GROUP_GAP = 22
 const IF_COLORS = ['#58a6ff', '#3fb950', '#d29922', '#bc8cff', '#f778ba', '#ffa657']
+// 方法间调用边按「调用方」着色：同一条卡片发出的所有线同色，便于一眼看出谁连到谁
+const METHOD_COLORS = ['#58a6ff', '#3fb950', '#d29922', '#bc8cff', '#f778ba', '#ffa657', '#39c5cf', '#ff7b72']
+function methodColorRef(key) {
+  let h = 0
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
+  const idx = h % METHOD_COLORS.length
+  return { idx, color: METHOD_COLORS[idx] }
+}
 
-const view = { data: null, traceId: null, selected: null, expanded: new Map(), collapsed: new Map(), timer: null, dragPos: new Map(), motion: localStorage.getItem('apiflow.motion') !== '0', seenAt: {}, seenCount: {}, _sig: '' }
+const view = { data: null, traceId: null, selected: null, expanded: new Map(), collapsed: new Map(), timer: null, dragPos: new Map(), motion: localStorage.getItem('apiflow.motion') !== '0', paramsOn: localStorage.getItem('apiflow.params') !== '0', showClicks: localStorage.getItem('apiflow.showClicks') === '1', _newestTraceId: null, _pbar: '', seenAt: {}, seenCount: {}, _sig: '' }
 
 const $ = (id) => document.getElementById(id)
 
@@ -70,6 +79,110 @@ function shortUrl(url) {
   try { const u = new URL(url, 'http://localhost'); return `${u.pathname}` } catch { return String(url || '').slice(0, 48) }
 }
 
+const PARAM_SRC_ORDER = ['path', 'query', 'body', 'headers']
+const PARAM_SRC_NAME = { path: 'path', query: 'query', body: 'body', headers: 'header' }
+
+/** 调用行下面那几排实参标签，会让卡片变高：算一下要多占几行 */
+function argRowShown(item) {
+  return (item.args || []).some((a) => a.resolved || (a.name && String(a.expr).length <= 24))
+}
+function argRowsOf(node) {
+  let rows = 0
+  for (const ca of node.callArgs || []) if ((ca.items || []).some(argRowShown)) rows++
+  return rows
+}
+function argOffsetBefore(node, lineNo) {
+  let off = 0
+  for (const ca of node.callArgs || []) if (ca.line < lineNo && (ca.items || []).some(argRowShown)) off += ARG_LINE_H
+  return off
+}
+const MASK_KEYS = /^(password|passwd|pwd|token|access_token|refresh_token|authorization|secret|api_?key)$/i
+const PARAM_MAX_VALUE = 24
+
+/** 参数值展示：超长省略、敏感值打码 */
+function paramText(key, value) {
+  let v = String(value == null ? '' : value)
+  if (MASK_KEYS.test(String(key))) v = '••••'
+  if (v.length > PARAM_MAX_VALUE) v = `${v.slice(0, PARAM_MAX_VALUE)}…`
+  return v || '""'
+}
+
+/** 从请求节点 meta.params 抽出可展示的参数（path → query → body → 少量 header） */
+function paramsOf(n) {
+  const p = n && n.meta && n.meta.params
+  if (!p) return []
+  const out = []
+  for (const src of PARAM_SRC_ORDER) {
+    const bag = p[src]
+    if (!bag || typeof bag !== 'object') continue
+    let limit = src === 'headers' ? 2 : 8
+    for (const [k, v] of Object.entries(bag)) {
+      if (src === 'headers') {
+        const lk = String(k).toLowerCase()
+        if (lk === 'x-apiflow-trace') continue
+        if (!(lk === 'content-type' || lk.startsWith('x-'))) continue
+      }
+      out.push({ k, v: paramText(k, v), raw: String(v == null ? '' : v), src })
+      if (--limit <= 0) break
+    }
+  }
+  return out
+}
+
+function paramChipHtml(list, opts = {}) {
+  const max = opts.max ?? 3
+  return list.slice(0, max).map((p) =>
+    `<span class="pchip ${p.src}" title="${escapeHtml(`${PARAM_SRC_NAME[p.src]} · ${p.raw}`)}"><b>${escapeHtml(p.k)}</b>=${escapeHtml(p.v)}</span>`).join('') +
+    (list.length > max ? `<span class="pchip more">+${list.length - max}</span>` : '')
+}
+
+/** 参数条：常驻展示「当前 trace 最近一次请求」的参数，下一次请求到来时整体替换 */
+function renderParamBar(trace, flow) {
+  const el = $('parambar')
+  if (!el) return
+  if (!view.paramsOn) { el.hidden = true; view._pbar = ''; return }
+  let latest = null
+  for (const n of flow.nodes) {
+    if (n.kind !== 'request') continue
+    if (!latest || (n.at || 0) >= (latest.at || 0)) latest = n
+  }
+  const list = latest ? paramsOf(latest) : []
+  const sig = latest ? `${latest.id}|${list.map((p) => `${p.src}/${p.k}=${p.raw}`).join('&')}` : 'none'
+  if (sig === view._pbar) { el.hidden = false; return }
+  const firstPaint = !view._pbar
+  view._pbar = sig
+  el.hidden = false
+  if (!latest) {
+    el.innerHTML = `<span class="pb-title">本次参数</span><span class="pb-empty">还没有请求</span>`
+    el.classList.remove('flash')
+    return
+  }
+  const head = `<span class="pb-title"><i class="pb-dot ${latest.status === 'error' ? 'bad' : ''}"></i>${escapeHtml(latest.meta?.method || '')} ${escapeHtml(shortUrl(latest.meta?.url || ''))}</span>`
+  const body = list.length ? paramChipHtml(list, { max: 12 }) : '<span class="pb-empty">无参数</span>'
+  el.innerHTML = `${head}${body}<button class="pb-close" title="隐藏参数条">×</button>`
+  el.querySelectorAll('.pchip').forEach((chip) => {
+    chip.onclick = () => { view.selected = latest.id; view._sig = ''; renderGraph(); renderDetail(trace) }
+  })
+  const close = el.querySelector('.pb-close')
+  if (close) close.onclick = (ev) => {
+    ev.stopPropagation()
+    view.paramsOn = false
+    localStorage.setItem('apiflow.params', '0')
+    syncParamsBtn()
+    view._pbar = ''
+    view._sig = ''
+    renderGraph()
+  }
+  if (!firstPaint) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash') }
+}
+
+function syncParamsBtn() {
+  const btn = $('btn-params')
+  if (!btn) return
+  btn.textContent = view.paramsOn ? '参数 开' : '参数 关'
+  btn.classList.toggle('off', !view.paramsOn)
+}
+
 function baseName(file) {
   return String(file || '').split(/[\\/]/).pop() || ''
 }
@@ -81,6 +194,17 @@ async function tick() {
     $('pill-cdp').textContent = '服务未响应'
     $('pill-cdp').className = 'pill bad'
     return
+  }
+  // 新的「有请求」trace 一到就自动切过去：单点一次触发的请求也能第一时间看到
+  const newest = (view.data?.traces || [])[0]
+  if (newest && newest.id !== view._newestTraceId) {
+    const first = !view._newestTraceId
+    view._newestTraceId = newest.id
+    if (hasPayload(newest) && (first || view.traceId === null || view._follow)) {
+      view.traceId = newest.id
+      view.selected = null
+      view._follow = true
+    }
   }
   renderPills()
   renderTraces()
@@ -103,16 +227,59 @@ function renderPills() {
   const b = view.data?.backend || {}
   const pill2 = $('pill-backend')
   if (b.summary) {
-    pill2.textContent = `后端索引 ${b.summary.routes} 路由 / ${b.summary.controllers} Controller / ${b.summary.files} 文件`
-    pill2.className = 'pill ok'
+    const counts = b.diagnostics?.counts || null
+    const bad = counts ? counts.actionable : 0
+    pill2.textContent = `后端索引 ${b.summary.routes} 路由 / ${b.summary.controllers} Controller / ${b.summary.files} 文件` + (bad ? ` · 未解析 ${bad}` : '')
+    pill2.className = `pill ${bad ? 'warn' : 'ok'}`
+    if (counts) {
+      pill2.title = `未解析：项目内 ${counts.actionable} / 第三方 ${counts.external} / 生成代码 ${counts.generated}` + (bad ? '（点击查看清单）' : '')
+      pill2.onclick = bad ? () => showDiagPanel(b.diagnostics) : null
+      pill2.style.cursor = bad ? 'pointer' : ''
+    }
   } else {
     pill2.textContent = `后端索引失败${b.error ? `：${String(b.error).slice(0, 80)}` : ''}`
     pill2.className = 'pill bad'
   }
 }
 
+function closeDiagPanel() {
+  document.getElementById('diagpanel')?.remove()
+}
+
+/** 未解析调用清单：只列项目内真断的调用（跨行签名、泛型、接口无实现被跳过等） */
+function showDiagPanel(diag) {
+  closeDiagPanel()
+  const items = diag?.actionable || []
+  const el = document.createElement('div')
+  el.id = 'diagpanel'
+  el.innerHTML = `
+    <div class="diag-head">
+      <b>索引诊断 · 项目内未解析 ${items.length}</b>
+      <button class="diag-x" title="关闭">×</button>
+    </div>
+    <div class="diag-body">
+      ${items.length ? items.map((u) => `<div class="diag-row">
+        <span class="diag-where">${escapeHtml(u.cls)}.${escapeHtml(u.from)} <i>L${u.line}</i></span>
+        <span class="diag-call">${escapeHtml(u.recv)}.${escapeHtml(u.name)}(…)</span>
+        <span class="diag-reason">${escapeHtml(u.reason)}</span>
+      </div>`).join('') : '<div class="diag-empty">没有项目内未解析的调用 🎉</div>'}
+    </div>
+    <div class="diag-foot">第三方 / Lombok / MyBatis 生成的方法不计入这里（详情看后端索引 pill 的 tooltip）</div>`
+  document.body.appendChild(el)
+  el.querySelector('.diag-x').onclick = closeDiagPanel
+}
+
+function hasPayload(t) {
+  return t.nodes.some((n) => n.kind === 'request' || n.kind === 'error')
+}
+
+function visibleTraces() {
+  const all = view.data?.traces || []
+  return view.showClicks ? all : all.filter(hasPayload)
+}
+
 function activeTrace() {
-  const traces = view.data?.traces || []
+  const traces = visibleTraces()
   if (!traces.length) return null
   if (!view.traceId || !traces.some((t) => t.id === view.traceId)) view.traceId = traces[0].id
   return traces.find((t) => t.id === view.traceId) || null
@@ -129,9 +296,16 @@ function expansionSet(trace) {
 
 function renderTraces() {
   const el = $('traces')
-  const traces = view.data?.traces || []
-  if (!traces.length) {
+  const allTraces = view.data?.traces || []
+  const traces = visibleTraces()
+  const hiddenClicks = allTraces.length - traces.length
+  if (!allTraces.length) {
     el.innerHTML = '<div class="hint">点击页面上的按钮，这里会出现一条链路</div>'
+    return
+  }
+  if (!traces.length) {
+    el.innerHTML = '<div class="hint">只有点击事件，还没有请求（点下面「显示纯点击」可以看）</div>'
+    renderClickToggle(el, hiddenClicks)
     return
   }
   const active = activeTrace()
@@ -144,8 +318,25 @@ function renderTraces() {
     </div>`
   }).join('')
   el.querySelectorAll('.trace').forEach((node) => {
-    node.onclick = () => { view.traceId = node.dataset.id; view.selected = null; renderTraces(); renderGraph() }
+    node.onclick = () => { view.traceId = node.dataset.id; view.selected = null; view._follow = false; renderTraces(); renderGraph() }
   })
+  renderClickToggle(el, hiddenClicks)
+}
+
+function renderClickToggle(el, hiddenClicks) {
+  const on = view.showClicks
+  const bar = document.createElement('button')
+  bar.id = 'btn-clicks'
+  bar.className = 'trace-toggle'
+  bar.textContent = on ? '隐藏纯点击' : `显示纯点击${hiddenClicks ? `（${hiddenClicks}）` : ''}`
+  bar.onclick = () => {
+    view.showClicks = !view.showClicks
+    try { localStorage.setItem('apiflow.showClicks', view.showClicks ? '1' : '0') } catch {}
+    view.traceId = null
+    renderTraces()
+    renderGraph()
+  }
+  el.appendChild(bar)
 }
 
 /** 计算方法卡片位置：按调用深度分列，列数放不下时折到下一行带；子卡片尽量对齐父方法的"调用行" */
@@ -228,7 +419,8 @@ function layoutMethods(trace, expanded, collapsed, topY = GRAPH_TOP, hidden = ne
       const band = Math.floor(depth / treeCols)
       const col = depth % treeCols
       const lineCount = String(node.code || '').split(/\r?\n/).length
-      const height = HEAD_H + (expanded.has(prefix + id) ? CODE_PAD * 2 + lineCount * LINE_H : 0)
+      const barRows = argRowsOf(node)
+      const height = HEAD_H + (expanded.has(prefix + id) ? CODE_PAD * 2 + lineCount * LINE_H + barRows * ARG_LINE_H : 0)
       const slot = `${band}:${col}`
       let y = colY.get(slot) ?? 0
       const parent = parentOf.get(id)
@@ -237,7 +429,7 @@ function layoutMethods(trace, expanded, collapsed, topY = GRAPH_TOP, hidden = ne
         const pNode = byId.get(parent.id)
         const sameBand = Math.floor((pNode.depth || 0) / treeCols) === band
         if (expanded.has(prefix + parent.id) && sameBand) {
-          const off = HEAD_H + CODE_PAD + (parent.line - pNode.startLine) * LINE_H
+          const off = HEAD_H + CODE_PAD + (parent.line - pNode.startLine) * LINE_H + argOffsetBefore(pNode, parent.line)
           y = Math.max(y, p.y + off - HEAD_H / 2)
         }
       }
@@ -385,6 +577,7 @@ function analyzeErrors(trace, flow) {
 
 // 前端代码节点比普通流程节点大：按代码行数给高度，宽度固定，用来展示"这一行发起了请求"
 function nodeSize(n) {
+  if (n.kind === 'request' && paramsOf(n).length) return { w: 250, h: FLOW_H + 26 }
   if (n.kind === 'fe') {
     const lines = String(n.meta?.code || '').split('\n')
     const shown = Math.max(3, Math.min(lines.length, 12))
@@ -491,8 +684,15 @@ function renderGraph() {
   }
   const errInfo = analyzeErrors(trace, flow)
   const flowLay = layoutFlow(trace, flow)
+  // 参数条是浮在画布顶部的：把它占的高度让出来，别压住流程卡片
+  const barOffset = view.paramsOn ? 46 : 0
+  if (barOffset) {
+    for (const p of flowLay.pos.values()) p.y += barOffset
+    flowLay.height += barOffset
+  }
   const flowPos = flowLay.pos
   const methodTop = flowLay.height + 40
+  renderParamBar(trace, flow)
 
   // 分组是否算“失败”也按最近一次响应判断：接口复通后，它后面的方法链不该继续红着
   const flowStatusOf = new Map(flow.nodes.map((n) => [n.id, n.status]))
@@ -547,6 +747,7 @@ function renderGraph() {
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#3d4756" /></marker>
     <marker id="arrow-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f85149" /></marker>
     ${IF_COLORS.map((c, i) => `<marker id="arrow-if${i}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="${c}" /></marker>`).join('')}
+    ${METHOD_COLORS.map((c, i) => `<marker id="arrow-mc${i}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="${c}" /></marker>`).join('')}
   </defs>`
 
   const curveD = (x1, y1, x2, y2) => {
@@ -569,6 +770,17 @@ function renderGraph() {
   const addFlow = (d, toId) => {
     if (view.motion && toId && fresh.has(toId)) overlayHtml += `<path class="flowpath" d="${d}" />`
   }
+  // 参数胶囊：跟着流向高光沿边滑过去（一次性），只在「刚到的请求→响应」这条边上出现
+  const chipMotion = (d, text, delay) => {
+    const label = String(text)
+    const w = Math.min(240, 14 + label.length * 7)
+    return `<g class="pmotion" opacity="0">
+      <rect x="0" y="-9" width="${w}" height="18" rx="9" />
+      <text x="7" y="4">${escapeHtml(label)}</text>
+      <animateMotion dur="1.6s" begin="${delay}s" fill="freeze" path="${d}" />
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.08;0.72;1" dur="1.75s" begin="${delay}s" fill="freeze" />
+    </g>`
+  }
   for (const e of flow.edges) {
     const a = flowPos.get(e.from)
     const b = flowPos.get(e.to)
@@ -576,6 +788,16 @@ function renderGraph() {
     const d = curveD(a.x + a.w, a.y + a.h / 2, b.x, b.y + b.h / 2)
     edgeHtml += `<path d="${d}" fill="none" stroke="${e.status === 'error' ? '#f85149' : '#3d4756'}" stroke-width="${e.status === 'error' ? 2 : 1.4}" marker-end="url(#${e.status === 'error' ? 'arrow-err' : 'arrow'})" />`
     addFlow(d, e.to)
+    // 参数流动：请求 → 响应 这条边上带 2 个参数胶囊滑过去
+    if (view.motion && fresh.has(e.to)) {
+      const fromN = flow.nodes.find((n) => n.id === e.from)
+      const toN = flow.nodes.find((n) => n.id === e.to)
+      if (fromN && toN && fromN.kind === 'request' && toN.kind === 'response') {
+        paramsOf(fromN).slice(0, 2).forEach((p, i) => {
+          overlayHtml += chipMotion(d, `${p.k}=${p.v}`, 0.12 + i * 0.14)
+        })
+      }
+    }
   }
 
   // 响应 → 分组标题栏：每个接口一条独立折线（各自的颜色 + 各自的车道），
@@ -602,7 +824,8 @@ function renderGraph() {
     }
   }
 
-  // 方法间调用边：从父方法"那一行"拉出；父卡片收起时锚在右缘中部；子卡片折到下一行时改为纵向汇入卡片顶部
+  // 方法间调用边：从父方法"那一行"拉出；父卡片收起时锚在右缘中部；子卡片折到下一行时改为纵向汇入卡片顶部。
+  // 颜色跟随「调用方」：同一个方法发出的所有线同色（异常仍用红色），hover 卡片时其余边淡出，便于追线。
   {
     const expanded = expansionSet(trace)
     for (const g of methodLay.groups) {
@@ -615,26 +838,25 @@ function renderGraph() {
         const a = methodLay.pos.get(fromKey)
         const b = methodLay.pos.get(toKey)
         if (!a || !b) continue
+        const ref = methodColorRef(fromKey)
+        const stroke = badAll ? '#f85149' : ref.color
+        const marker = badAll ? 'arrow-err' : `arrow-mc${ref.idx}`
+        const sw = badAll ? 2 : 1.5
+        const attrs = `class="medge" data-from="${escapeHtml(fromKey)}" data-to="${escapeHtml(toKey)}"`
         const parentNode = a.node
         const parentOpen = expanded.has(fromKey)
         const off = parentOpen
-          ? HEAD_H + CODE_PAD + (e.line - parentNode.startLine) * LINE_H + LINE_H / 2
+          ? HEAD_H + CODE_PAD + (e.line - parentNode.startLine) * LINE_H + argOffsetBefore(parentNode, e.line) + LINE_H / 2
           : HEAD_H / 2
         const x1 = a.x + cw
         const y1 = a.y + off
-        const below = b.y > a.y + a.height - 4
-        if (below) {
-          const x2 = b.x + cw / 2
-          const y2 = b.y
-          const dDown = `M ${x1} ${y1} C ${x1 + 90} ${y1}, ${x2} ${y2 - 46}, ${x2} ${y2}`
-          edgeHtml += `<path d="${dDown}" fill="none"
-            stroke="${badAll ? '#f85149' : '#3d4756'}" stroke-width="${badAll ? 2 : 1.4}" marker-end="url(#${badAll ? 'arrow-err' : 'arrow'})" />`
-          addFlow(dDown, toKey)
-        } else {
-          const dSide = curveD(x1, y1, b.x, b.y + HEAD_H / 2)
-          edgeHtml += `<path d="${dSide}" fill="none" stroke="${badAll ? '#f85149' : '#3d4756'}" stroke-width="${badAll ? 2 : 1.4}" marker-end="url(#${badAll ? 'arrow-err' : 'arrow'})" />`
-          addFlow(dSide, toKey)
-        }
+        // 统一从子卡片左缘垂直居中进入（不再因上下行/车道偏移改变落点，线看起来整齐）
+        const x2 = b.x
+        const y2 = b.y + HEAD_H / 2
+        const curveCtrl = `C ${x1 + 80} ${y1}, ${x2 - 60} ${y2}, ${x2} ${y2}`
+        const d = `M ${x1} ${y1} ${curveCtrl}`
+        edgeHtml += `<path ${attrs} d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}" marker-end="url(#${marker})" />`
+        addFlow(d, toKey)
       }
     }
   }
@@ -690,6 +912,7 @@ function renderGraph() {
       style="left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px" data-id="${escapeHtml(n.id)}">
       <span class="kind">${acol ? `<i class="ifdot" style="background:${acol}"></i>` : ''}${escapeHtml(KIND_NAME[n.kind] || n.kind)}${times > 1 ? `<i class="cnt">×${times}</i>` : ''}${isRoot ? '<i class="errtag">根因</i>' : ''}${isStop ? '<i class="stoptag">到此为止</i>' : ''}${isFe ? `<i class="ffe">${escapeHtml((feMeta.func ? feMeta.func + ' · ' : '') + (feMeta.file || ''))}</i>` : ''}</span>
       ${isFe ? feHtml : `<div class="label">${escapeHtml(n.label)}</div>`}
+      ${n.kind === 'request' && paramsOf(n).length ? `<div class="pchips">${paramChipHtml(paramsOf(n), { max: 2 })}</div>` : ''}
     </div>`
   }).join('')
 
@@ -711,6 +934,19 @@ function renderGraph() {
   // 方法代码卡片（一条 trace 多个接口时按树分组，key 带 bN: 前缀）
   {
     const expanded = expansionSet(trace)
+    const parentsOf = new Map()
+    for (const g of methodLay.groups) {
+      if (g.collapsed) continue
+      for (const e of g.backend.edges) {
+        const toKey = g.prefix + e.to
+        if (!parentsOf.has(toKey)) parentsOf.set(toKey, [])
+        const pn = methodLay.pos.get(g.prefix + e.from)
+        parentsOf.get(toKey).push({
+          key: g.prefix + e.from,
+          name: pn ? `${pn.node.cls}.${pn.node.method}` : e.from,
+        })
+      }
+    }
     for (const g of methodLay.groups) {
       if (g.collapsed) continue
       const badAll = groupBad(g)
@@ -720,18 +956,26 @@ function renderGraph() {
         const n = p.node
         const lines = String(n.code || '').split('\n')
         const callMap = new Map()
+        const edgeByCall = new Map()
+        for (const e of g.backend.edges) if (e.args && e.args.length) edgeByCall.set(`${e.to}@${e.line}`, e)
+        const nodeCallArgs = new Map()
+        for (const ca of n.callArgs || []) nodeCallArgs.set(ca.line, ca.items || [])
         for (const c of n.calls) {
           if (!callMap.has(c.line)) callMap.set(c.line, [])
           callMap.get(c.line).push(c)
         }
         const open = expanded.has(key)
         const callableCount = callMap.size
+        const ps = parentsOf.get(key) || []
+        const parentChip = ps.length
+          ? `<span class="mparent" data-jump="${escapeHtml(ps[0].key)}" title="${escapeHtml(ps.map((x) => x.name).join(' / '))}">← ${escapeHtml(ps.length === 1 ? ps[0].name : `${ps.length} 个调用方`)}</span>`
+          : ''
         html += `<div class="mcard ${open ? 'open' : ''} ${view.selected === key ? 'sel' : ''} ${badAll ? 'err' : ''}"
-          style="left:${p.x}px;top:${p.y}px;width:${g.cardW || CARD_W}px" data-id="${escapeHtml(key)}">
+          style="left:${p.x}px;top:${p.y}px;width:${g.cardW || CARD_W}px" data-id="${escapeHtml(key)}" data-key="${escapeHtml(key)}">
           <div class="mhead" data-act="toggle">
             <span class="mchev">${open ? '▾' : '▸'}</span>
             <span class="mname">${escapeHtml(n.cls)}.${escapeHtml(n.method)}()</span>
-            ${n.xml ? '<span class="mtag">XML</span>' : ''}
+            ${n.xml ? '<span class="mtag">XML</span>' : ''}${parentChip}
             <span class="mfile">${escapeHtml(baseName(n.file))}:${n.startLine}</span>
             <span class="mcall">${callableCount ? `${callableCount} 处调用` : ''}</span>
           </div>
@@ -739,7 +983,23 @@ function renderGraph() {
             const lineNo = n.startLine + i
             const calls = callMap.get(lineNo) || []
             const targets = calls.map((c) => `${g.prefix}${c.toKey}@${c.line}`).join(',')
-            return `<div class="ln ${calls.length ? 'callable' : ''}"${calls.length ? ` data-targets="${escapeHtml(targets)}"` : ''}><span class="lno">${n.xml ? '·' : lineNo}</span><span class="ltext">${escapeHtml(text) || ' '}</span>${calls.length ? '<span class="lgo">↳</span>' : ''}</div>`
+            const edgeArgs = calls.flatMap((c) => { const e = edgeByCall.get(`${c.toKey}@${c.line}`); return e && e.args ? e.args.map((a) => ({ ...a, callee: c.toKey })) : [] })
+            const groups = (nodeCallArgs.get(lineNo) || []).length
+              ? nodeCallArgs.get(lineNo)
+              : (edgeArgs.length ? [{ callee: '', args: edgeArgs }] : [])
+            const argLine = groups.length
+              ? groups.map((grp) => {
+                const shown = grp.args.filter((a) => a.resolved || (a.name && String(a.expr).length <= 24))
+                if (!shown.length) return ''
+                return `<div class="argline">${grp.callee ? `<span class="argcallee">${escapeHtml(grp.callee)}()</span>` : ''}${shown.map((a) => {
+                  const label = a.name ? `${a.name}=${a.value}` : (String(a.value) === String(a.expr) ? String(a.value) : `${a.expr}=${a.value}`)
+                  return a.resolved
+                    ? `<span class="argv">${escapeHtml(label)}</span>`
+                    : `<span class="argv miss" title="没能从本次请求参数里解析出值">${escapeHtml(label)}</span>`
+                }).join('')}</div>`
+              }).join('')
+              : ''
+            return `<div class="ln ${calls.length ? 'callable' : ''}"${calls.length ? ` data-targets="${escapeHtml(targets)}"` : ''}><span class="lno">${n.xml ? '·' : lineNo}</span><span class="ltext">${escapeHtml(text) || ' '}</span>${calls.length ? '<span class="lgo">↳</span>' : ''}</div>${argLine}`
           }).join('')}</div>` : ''}
         </div>`
       }
@@ -784,6 +1044,47 @@ function renderGraph() {
       renderGraph()
     }
   })
+
+  // 「← 调用方」标签：点一下跳到调用方卡片并展开它
+  nodesEl.querySelectorAll('.mparent').forEach((el) => {
+    el.onclick = (ev) => {
+      ev.stopPropagation()
+      const key = el.dataset.jump
+      if (!key) return
+      expansionSet(trace).add(key)
+      view.selected = key
+      renderGraph()
+      renderDetail(trace)
+    }
+  })
+
+  // 悬停卡片：只保留与它相关的调用线，其余淡出——密集图里用来追「这条线到底连谁」
+  {
+    const edgesEl = $('edges')
+    const medges = [...svg.querySelectorAll('path.medge')]
+    const clearFocus = () => {
+      edgesEl.classList.remove('dim')
+      nodesEl.classList.remove('focus')
+      medges.forEach((p) => p.classList.remove('hl'))
+      nodesEl.querySelectorAll('.mcard').forEach((c) => c.classList.remove('related'))
+    }
+    const focusKey = (key) => {
+      if (!key) return clearFocus()
+      const rel = new Set([key])
+      edgesEl.classList.add('dim')
+      for (const p of medges) {
+        const on = p.dataset.from === key || p.dataset.to === key
+        p.classList.toggle('hl', on)
+        if (on) { rel.add(p.dataset.from); rel.add(p.dataset.to) }
+      }
+      nodesEl.classList.add('focus')
+      nodesEl.querySelectorAll('.mcard').forEach((c) => c.classList.toggle('related', rel.has(c.dataset.key)))
+    }
+    nodesEl.querySelectorAll('.mcard').forEach((card) => {
+      card.addEventListener('mouseenter', () => focusKey(card.dataset.key))
+      card.addEventListener('mouseleave', () => focusKey(null))
+    })
+  }
 
   // —— 自由拖动：流程节点整块拖，方法卡片拖标题栏；位置按 trace 记住，双击还原 ——
   nodesEl.querySelectorAll('.node').forEach((el) => {
@@ -984,6 +1285,18 @@ function renderDetail(trace) {
     }
   }
 
+  let paramHtml = ''
+  if (node.kind === 'request') {
+    const list = paramsOf(node)
+    if (list.length) {
+      paramHtml = `<h3 style="margin-top:14px">本次请求参数（${list.length}）</h3><div class="ptable">${
+        list.map((p) => {
+          const shown = MASK_KEYS.test(p.k) ? '••••' : (p.raw.length > 240 ? `${p.raw.slice(0, 240)}…` : p.raw)
+          return `<div class="prow"><i class="psrc ${p.src}">${escapeHtml(PARAM_SRC_NAME[p.src])}</i><code>${escapeHtml(p.k)}</code><span>${escapeHtml(shown)}</span></div>`
+        }).join('')}</div>`
+    }
+  }
+
   const occHtml = occ.length > 1
     ? `<h3 style="margin-top:14px">每次请求（${occ.length} 次）</h3><pre>${
       occ.map((o, i) => `#${i + 1}  ${o.method || ''} ${o.url || ''}  ${o.status != null ? o.status : ''}  ${o.duration != null ? `${o.duration}ms` : ''}`).join('\n')
@@ -991,6 +1304,7 @@ function renderDetail(trace) {
     : ''
 
   body.innerHTML = `<div class="kv">${kv.map(([k, v]) => `<b>${escapeHtml(k)}</b><span>${k === '状态' ? v : escapeHtml(v)}</span>`).join('')}</div>`
+    + paramHtml
     + occHtml
     + renderBody(meta, node.id)
     + (meta.stack ? `<h3 style="margin-top:14px">调用栈</h3><pre>${escapeHtml(meta.stack)}</pre>` : '')
@@ -1119,6 +1433,18 @@ if ($('btn-motion')) {
     localStorage.setItem('apiflow.motion', view.motion ? '1' : '0')
     view._sig = ''
     syncMotion()
+    renderGraph()
+  }
+}
+
+if ($('btn-params')) {
+  syncParamsBtn()
+  $('btn-params').onclick = () => {
+    view.paramsOn = !view.paramsOn
+    localStorage.setItem('apiflow.params', view.paramsOn ? '1' : '0')
+    view._pbar = ''
+    view._sig = ''
+    syncParamsBtn()
     renderGraph()
   }
 }

@@ -123,6 +123,9 @@ function parseJavaFile(file) {
   const className = classMatch ? classMatch[1] : ifaceMatch ? ifaceMatch[1] : null
   if (!className) return null
   const isInterface = !classMatch
+  const implementsList = classMatch
+    ? [...(/(?:implements)\s+([\w$.,<>\s]+?)(?:\{|$)/.exec(text.slice(classMatch.index))?.[1] || '').matchAll(/([A-Z][\w$]*)/g)].map((x) => x[1])
+    : []
 
   const fields = new Map()
   for (const m of text.matchAll(/(?:private|protected|public)\s+(?:final\s+)?([A-Z]\w*)\s+(\w+)\s*[;=]/g)) {
@@ -130,29 +133,35 @@ function parseJavaFile(file) {
   }
 
   const methods = new Map()
-  // 接口：只解析方法签名（Mapper / Service interface），源码就是签名行
+  // 接口：只解析方法签名（Mapper / Service interface），签名可能跨多行
   if (isInterface) {
-    const lines = text.split('\n')
-    for (let i = 0; i < lines.length; i++) {
-      const ln = lines[i]
-      if (/^\s*@/.test(ln) || ln.includes('{') || ln.includes('}')) continue
-      const semi = ln.lastIndexOf(';')
-      if (semi < 0) continue
-      const close = ln.lastIndexOf(')')
-      if (close < 0) continue
-      const tail = ln.slice(close + 1).trim()
-      if (tail !== ';' && tail !== '') continue
-      const open = ln.indexOf('(')
-      if (open < 0 || open > close) continue
-      const head = ln.slice(0, open).trim()
-      const nm = /(\w+)\s*$/.exec(head)
-      if (!nm) continue
-      const name = nm[1]
+    const declRe = /([A-Za-z_$][\w$<>\[\],.?\s]*?)\b([A-Za-z_$][\w$]*)\s*\(/g
+    for (const m of text.matchAll(declRe)) {
+      const name = m[2]
       if (KEYWORDS.has(name) || methods.has(name) || name === className) continue
-      if (head.split(/\s+/).length < 2) continue
-      methods.set(name, { name, line: i + 1, endLine: i + 1, start: 0, end: 0, body: '' })
+      const typeTokens = m[1].trim().split(/\s+/).filter(Boolean)
+      if (typeTokens.length < 1) continue
+      const lastType = typeTokens[typeTokens.length - 1]
+      if (!/^(?:[A-Z][\w$<>\[\],.?]*|void|int|long|short|byte|char|boolean|double|float|String|Object|List|Map|Set|Optional|Page)$/.test(lastType)) continue
+      const parenOpen = m.index + m[0].length - 1
+      const parenClose = matchParen(text, parenOpen)
+      if (parenClose < 0) continue
+      let k = parenClose + 1
+      while (k < text.length && /\s/.test(text[k])) k++
+      if (text[k] !== ';') continue
+      methods.set(name, {
+        name,
+        line: lineAt(text, m.index),
+        endLine: lineAt(text, parenClose),
+        start: 0,
+        end: 0,
+        body: '',
+        params: parseParamTypes(text, parenOpen, parenClose),
+        iface: true,
+      })
     }
-    return { file, className, fields, methods, text, raw, isInterface }
+    const implementsList = []
+    return { file, className, fields, methods, text, raw, isInterface, implementsList }
   }
   const declRe = /(?:public|private|protected)\s+(?:static\s+)?(?:final\s+)?(?:synchronized\s+)?(?:<[^>]*>\s*)?[\w$<>\[\],\s.?]+\s+(\w+)\s*\(/g
   for (const m of text.matchAll(declRe)) {
@@ -186,23 +195,65 @@ function parseJavaFile(file) {
       start: braceOpen + 1,
       end: bodyClose,
       body: text.slice(braceOpen + 1, bodyClose),
+      params: parseParamTypes(text, parenOpen, parenClose),
     })
   }
-  return { file, className, fields, methods, text, raw }
+  return { file, className, fields, methods, text, raw, implementsList }
 }
 
 /**
  * 抽取"方法直接调用了谁"：依赖字段调用 / this 调用 / 同类本地调用 / 静态类名调用。
  * 每条调用带调用点行号与所在代码片段，供前端从"那一行"拉线。
  */
-function extractCalls(parsed, classes) {
+function extractCalls(parsed, classes, implOf) {
   const calls = []
+  const sites = []
+  const unresolved = []
   const self = parsed.methods
   const { text } = parsed
+  // 三分类：actionable（项目内真断了）/ external（JDK、第三方库）/ generated（Lombok、MyBatis Mapper 代理等生成代码）
+  const miss = (method, absIndex, recv, name, reason) => {
+    let kind = 'actionable'
+    if (reason === 'unknown-receiver' || reason === 'unknown-class') kind = 'external'
+    else if (reason === 'no-such-method') {
+      // 接收者是字段/形参 → 项目内类真的没这个方法（actionable）；接收者是大写类名 → Lombok builder / 静态工具（generated）
+      const fromField = parsed.fields.has(recv)
+      const fromParam = method.params && method.params.has(recv)
+      // Lombok 生成器：getXxx()/setXxx()/isXxx()/builder()/build() 在源码里不存在
+      const lombokLike = /^(get|set|is)[A-Z]\w*$|^(builder|build)$/.test(name)
+      kind = (fromField || fromParam) && !lombokLike ? 'actionable' : 'generated'
+    } else if (reason === 'iface-no-impl') {
+      // Mapper 接口的实现由 MyBatis 运行时生成
+      const iface = (classes.get(recv) || classes.get(recv)) || null
+      const isMapper = /Mapper$/.test(recv) || (iface && /@Mapper/.test(iface.text || ''))
+      kind = isMapper ? 'generated' : 'actionable'
+    }
+    unresolved.push({
+      cls: parsed.className,
+      from: method.name,
+      line: lineAt(text, absIndex),
+      recv,
+      name,
+      reason,
+      kind,
+    })
+  }
   for (const method of parsed.methods.values()) {
     const seen = new Set()
+    // 方法体内局部变量声明（含 for-each / try-with-resources），用于解析 user.getName() 这类本地变量调用
+    const localTypes = new Map()
+    if (method.body) {
+      for (const m of method.body.matchAll(/(?:^|[^\w$.])([A-Z][\w$]*(?:<[^;=(){}]*>)?)\s+([a-z_$][\w$]*)\s*(?=[=;:,)])/g)) {
+        localTypes.set(m[2], m[1].replace(/<.*>$/, '').trim())
+      }
+      for (const m of method.body.matchAll(/for\s*\(\s*(?:final\s+)?([A-Z][\w$]*(?:<[^;:]*>)?)\s+([a-z_$][\w$]*)\s*:/g)) {
+        localTypes.set(m[2], m[1].replace(/<.*>$/, '').trim())
+      }
+    }
     const push = (toClass, toMethod, absIndex) => {
       const key = `${toClass}.${toMethod}`
+      // 每个调用点都记一条（site），图上的边仍按目标去重
+      sites.push({ toClass, toMethod, callLine: lineAt(text, absIndex) })
       if (seen.has(key)) return
       seen.add(key)
       calls.push({
@@ -219,11 +270,35 @@ function extractCalls(parsed, classes) {
       const [, recv, name] = m
       if (KEYWORDS.has(name) || KEYWORDS.has(recv)) continue
       const absIndex = method.start + m.index
-      const owner = recv === 'this' ? parsed.className : parsed.fields.get(recv) || (classes.has(recv) ? recv : null)
-      if (!owner) continue
-      const target = classes.get(owner)
-      if (!target || !target.methods.has(name)) continue
-      push(owner, name, absIndex)
+      const localType = localTypes.get(recv)
+      const owner = recv === 'this'
+        ? parsed.className
+        : localType || parsed.fields.get(recv) || (method.params && method.params.get(recv)) || (classes.has(recv) ? recv : null)
+      if (!owner) { miss(method, absIndex, recv, name, 'unknown-receiver'); continue }
+      let target = classes.get(owner)
+      if (!target) { miss(method, absIndex, recv, name, 'unknown-class'); continue }
+      if (!target.methods.has(name)) {
+        if (target.isInterface) {
+          const impls = implOf && implOf.has(owner) ? (implOf.get(owner) || []).filter((c) => classes.get(c) && classes.get(c).methods.has(name)) : []
+          if (impls.length === 1) {
+            target = classes.get(impls[0])
+          } else if (impls.length > 1) {
+            miss(method, absIndex, recv, name, `iface-multi-impl(${impls.length})`); continue
+          } else {
+            miss(method, absIndex, recv, name, 'iface-no-impl'); continue
+          }
+        } else {
+          miss(method, absIndex, recv, name, 'no-such-method'); continue
+        }
+      }
+      // 字段声明成接口（Service/Mapper）：如果只有一个实现类且实现了这个方法，就跳到实现类
+      if (target.isInterface && implOf && implOf.has(owner)) {
+        const impls = (implOf.get(owner) || []).filter((c) => classes.get(c) && classes.get(c).methods.has(name))
+        if (impls.length === 1) target = classes.get(impls[0])
+      }
+      const toClass = target.className
+      if (!target.methods.has(name)) { miss(method, absIndex, recv, name, 'unresolved-after-impl'); continue }
+      push(toClass, name, absIndex)
     }
     // 2) 同类本地调用： foo(...)
     for (const m of method.body.matchAll(/(?:^|[^.\w$])([a-z][\w$]*)\s*\(/g)) {
@@ -233,7 +308,51 @@ function extractCalls(parsed, classes) {
       push(parsed.className, name, method.start + m.index)
     }
   }
-  return calls
+  return { calls, sites, unresolved }
+}
+
+/** 按顶层逗号切分（忽略括号与字符串内的逗号） */
+function splitParams(s) {
+  const out = []
+  let depth = 0
+  let cur = ''
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (ch === '"' || ch === "'") {
+      const q = ch
+      cur += ch
+      i++
+      while (i < s.length && s[i] !== q) { cur += s[i]; if (s[i] === String.fromCharCode(92)) { i++; cur += s[i] } i++ }
+      continue
+    }
+    if (ch === '(' || ch === '<' || ch === '[') depth++
+    else if (ch === ')' || ch === '>' || ch === ']') depth--
+    if (ch === ',' && depth === 0) { out.push(cur); cur = ''; continue }
+    cur += ch
+  }
+  if (cur.trim()) out.push(cur)
+  return out
+}
+
+/** 从参数列表文本解析 形参名 -> 类型（去掉注解/final/可变参数） */
+function parseParamTypes(text, parenOpen, parenClose) {
+  const map = new Map()
+  if (parenOpen < 0 || parenClose <= parenOpen) return map
+  const raw = text.slice(parenOpen + 1, parenClose)
+  for (const part of splitParams(raw)) {
+    const clean = part
+      .replace(/@[\w$.]+\s*\([^)]*\)/g, ' ')
+      .replace(/@[\w$.]+/g, ' ')
+      .replace(/final/g, ' ')
+      .replace(/\.\.\./g, ' ')
+      .replace(/<[^<>]*>/g, ' ')
+      .trim()
+    if (!clean) continue
+    const m = /([A-Za-z_$][\w$]*(?:\[\])?)\s+([A-Za-z_$][\w$]*)\s*$/.exec(clean)
+    if (!m) continue
+    map.set(m[2], m[1])
+  }
+  return map
 }
 
 const MAPPING_RE = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\b/g
@@ -329,8 +448,20 @@ export function indexJavaProject(root) {
   }
 
   const edges = new Map() // 'Cls.method' -> [{ toClass, toMethod, callLine, snippet }]
+  const implOf = new Map()
   for (const parsed of parsedList) {
-    for (const call of extractCalls(parsed, classes)) {
+    for (const iface of parsed.implementsList || []) {
+      if (!implOf.has(iface)) implOf.set(iface, [])
+      implOf.get(iface).push(parsed.className)
+    }
+  }
+  const unresolvedAll = []
+  const allSites = []
+  for (const parsed of parsedList) {
+    const { calls: fileCalls, sites: fileSites, unresolved: fileUnresolved } = extractCalls(parsed, classes, implOf)
+    for (const site of fileSites) allSites.push({ ...site, file: parsed.file })
+    for (const u of fileUnresolved) unresolvedAll.push({ ...u, file: parsed.file })
+    for (const call of fileCalls) {
       const fromKey = `${parsed.className}.${call.from}`
       if (!edges.has(fromKey)) edges.set(fromKey, [])
       edges.get(fromKey).push(call)
@@ -422,7 +553,21 @@ export function indexJavaProject(root) {
 
   const warnings = []
   if (!routes.length) warnings.push(`在 ${root} 下没有解析到 Spring Controller 路由`)
-  return { root, files: files.length, classes: classes.size, routes, methods: methodIndex, mappers: mapperByClass.size, mapperHits, warnings }
+  // 去重（同一类同一方法里同一接收者同一方法名只记一次）
+  const seenMiss = new Set()
+  const unresolved = []
+  for (const u of unresolvedAll) {
+    const k = `${u.cls}|${u.from}|${u.recv}|${u.name}`
+    if (seenMiss.has(k)) continue
+    seenMiss.add(k)
+    unresolved.push(u)
+  }
+  const actionable = unresolved.filter((u) => u.kind === 'actionable')
+  const external = unresolved.filter((u) => u.kind === 'external')
+  const generated = unresolved.filter((u) => u.kind === 'generated')
+  const diagnostics = { unresolved, actionable: actionable.length, external: external.length, generated: generated.length }
+  if (actionable.length) warnings.push(`有 ${actionable.length} 处项目内方法调用未解析（详见 diagnostics.unresolved）`)
+  return { root, files: files.length, classes: classes.size, routes, methods: methodIndex, callSites: allSites, mappers: mapperByClass.size, mapperHits, diagnostics, warnings }
 }
 
 // 语言无关的 matchRoute / buildCallTree / summarize 来自 graph-core，这里按旧接口再导出，

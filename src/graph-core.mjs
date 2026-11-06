@@ -100,6 +100,7 @@ export function summarize(index) {
     classes: index.classes ?? index.modules ?? 0,
     routes: routes.length,
     controllers: new Set(owners).size,
+    unresolved: (index.diagnostics && index.diagnostics.actionable) || 0,
     warnings: index.warnings || [],
   }
 }

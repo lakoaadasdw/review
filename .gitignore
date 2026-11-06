@@ -7,3 +7,6 @@ apiflow.config.json
 node_modules/
 .DS_Store
 Thumbs.db
+
+# javac 对照产物
+tools/out/

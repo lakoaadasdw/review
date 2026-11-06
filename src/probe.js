@@ -12,6 +12,23 @@
   }
   const uid = () => (globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`)
   // 请求发起点的方法栈：宿主据此把 URL 映射回前端源码文件与行号
+  // 请求参数：body（文本，最多 4000 字）+ 请求头（用于「参数随请求流动」展示）
+  function reqDetail(body, headers) {
+    const out = {}
+    try {
+      const b = typeof body === 'string' ? body : ''
+      if (b && b.trim()) out.body = b.slice(0, 4000)
+    } catch {}
+    try {
+      const obj = {}
+      if (headers && typeof headers.forEach === 'function') {
+        headers.forEach((v, k) => { if (obj[k] === undefined) obj[k] = String(v).slice(0, 300) })
+      }
+      if (Object.keys(obj).length) out.headers = obj
+    } catch {}
+    return out
+  }
+
   const callStack = () => {
     try {
       const prev = Error.stackTraceLimit
@@ -82,7 +99,7 @@
       const start = performance.now()
       const headers = new Headers(init.headers || input?.headers || undefined)
       headers.set('x-apiflow-trace', trace)
-      send({ kind: 'request', trace, reqId, url, method, stack: callStack(), at: Date.now() })
+      send({ kind: 'request', trace, reqId, url, method, stack: callStack(), at: Date.now(), ...reqDetail(init.body, headers) })
       try {
         const res = await origFetch.call(this, input, { ...init, headers })
         let bodyPreview = ''
@@ -121,7 +138,7 @@
         const start = performance.now()
         meta.trace = trace
         meta.reqId = reqId
-        send({ kind: 'request', trace, reqId, url: meta.url, method: meta.method, stack: callStack(), at: Date.now() })
+        send({ kind: 'request', trace, reqId, url: meta.url, method: meta.method, stack: callStack(), at: Date.now(), ...reqDetail(body) })
         this.addEventListener('loadend', () => {
           let bodyPreview = ''
           let bodyTruncated = false

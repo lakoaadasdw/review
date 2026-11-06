@@ -412,3 +412,161 @@ select#sel-target:focus { outline: none; border-color: #58a6ff; }
   from { stroke-dashoffset: 0; opacity: 0.95; }
   to { stroke-dashoffset: -170; opacity: 0; }
 }
+
+/* 调用边/卡片聚焦：hover 卡片时其余线淡出，只留与它相关的线 */
+#edges.dim path.medge { opacity: .05; }
+#edges path.medge.hl { opacity: 1; }
+#nodes.focus .mcard { opacity: .25; }
+#nodes.focus .mcard.related { opacity: 1; }
+.mparent {
+  margin-left: 6px; padding: 0 6px; font-size: 10px; line-height: 15px;
+  color: #8aa0b8; border: 1px solid #26374a; border-radius: 9px;
+  cursor: pointer; white-space: nowrap; max-width: 170px; overflow: hidden; text-overflow: ellipsis;
+}
+.mparent:hover { color: #cfe3ff; border-color: #388bfd; background: rgba(56,139,253,.12); }
+
+/* ---------- 请求参数：常驻参数条 + 卡片胶囊 + 流动胶囊 ---------- */
+#parambar {
+  position: absolute;
+  z-index: 6;
+  left: 12px;
+  right: 12px;
+  top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(16, 22, 30, .92);
+  border: 1px solid #2b3a4a;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
+  font-size: 12px;
+  backdrop-filter: blur(4px);
+}
+#parambar[hidden] { display: none; }
+#parambar.flash { animation: pbFlash .55s ease; }
+@keyframes pbFlash {
+  0% { border-color: #58a6ff; box-shadow: 0 0 0 2px rgba(88,166,255,.35); }
+  100% { border-color: #2b3a4a; box-shadow: 0 6px 20px rgba(0,0,0,.35); }
+}
+.pb-title { display: inline-flex; align-items: center; gap: 6px; color: #c9d1d9; font-weight: 600; margin-right: 4px; }
+.pb-dot { width: 7px; height: 7px; border-radius: 50%; background: #3fb950; display: inline-block; }
+.pb-dot.bad { background: #f85149; }
+.pb-empty { color: #7d8695; }
+.pb-close {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid #303a47;
+  color: #8b949e;
+  border-radius: 6px;
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.pb-close:hover { color: #f0f6fc; border-color: #58a6ff; }
+
+.pchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  max-width: 260px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #33414f;
+  background: rgba(88, 166, 255, .10);
+  color: #c9d1d9;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  animation: chipIn .35s ease both;
+}
+.pchip b { color: #79c0ff; font-weight: 600; margin-right: 2px; }
+.pchip.query { background: rgba(88,166,255,.10); border-color: #2f4d6e; }
+.pchip.body { background: rgba(63,185,80,.10); border-color: #2f5f3c; }
+.pchip.body b { color: #7ee787; }
+.pchip.path { background: rgba(210,153,34,.12); border-color: #6b5322; }
+.pchip.path b { color: #e3b341; }
+.pchip.headers { background: rgba(188,140,255,.10); border-color: #4c3a6b; }
+.pchip.headers b { color: #d2a8ff; }
+.pchip.more { background: transparent; border-style: dashed; color: #8b949e; cursor: default; }
+#parambar .pchip { cursor: pointer; }
+#parambar .pchip:hover { border-color: #58a6ff; }
+@keyframes chipIn { from { opacity: 0; transform: translateY(-4px) scale(.96); } to { opacity: 1; transform: none; } }
+
+.node .pchips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.node .pchips .pchip { font-size: 10.5px; padding: 1px 6px; animation: none; }
+
+#edges .pmotion rect { fill: rgba(13, 20, 28, .95); stroke: #58a6ff; stroke-width: 1; }
+#edges .pmotion text { fill: #c9e3ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+
+/* 详情面板里的参数表 */
+.ptable { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.prow { display: grid; grid-template-columns: 58px minmax(90px, 34%) 1fr; gap: 8px; align-items: baseline; font-size: 12px; }
+.prow code { color: #79c0ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.prow span { color: #c9d1d9; word-break: break-all; }
+.psrc { font-style: normal; font-size: 10.5px; text-align: center; border-radius: 999px; padding: 1px 6px; border: 1px solid #33414f; color: #9aa4b1; }
+.psrc.query { border-color: #2f4d6e; color: #79c0ff; }
+.psrc.body { border-color: #2f5f3c; color: #7ee787; }
+.psrc.path { border-color: #6b5322; color: #e3b341; }
+.psrc.headers { border-color: #4c3a6b; color: #d2a8ff; }
+
+/* 左侧链路列表底部：纯点击的显隐开关 */
+.trace-toggle {
+  margin: 8px 0 4px;
+  padding: 6px 10px;
+  width: 100%;
+  border-radius: 8px;
+  border: 1px dashed #33414f;
+  background: transparent;
+  color: #8b949e;
+  font-size: 12px;
+  cursor: pointer;
+}
+.trace-toggle:hover { border-color: #58a6ff; color: #c9d1d9; }
+
+/* 调用行下方的实参标注：形参名=本次请求带入的值 */
+.mcode .argline {
+  padding: 2px 0 3px 46px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.mcode .argline .argv {
+  color: #7ee787;
+  background: rgba(63, 185, 80, .12);
+  border: 1px solid rgba(63, 185, 80, .28);
+  border-radius: 4px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+.mcode .argline .argv.miss {
+  color: #8b949e;
+  background: rgba(139, 148, 158, .08);
+  border-color: rgba(139, 148, 158, .25);
+}
+.mcode .argline .argcallee {
+  color: #6e7681;
+  font-size: 10.5px;
+  margin-right: 2px;
+}
+
+/* 索引诊断（未解析调用）面板 */
+.pill.warn { color: #d29922; border-color: #4a3a12; background: #1d1708; }
+#diagpanel { position: fixed; z-index: 30; right: 16px; top: 54px; width: min(560px, 46vw); max-height: 62vh; display: flex; flex-direction: column;
+  background: #0f141b; border: 1px solid #2b3a4a; border-radius: 10px; box-shadow: 0 18px 40px rgba(0,0,0,.55); color: #c9d3dd; font-size: 12px; }
+#diagpanel .diag-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid #22303d; }
+#diagpanel .diag-head b { font-size: 12.5px; color: #e6edf3; }
+#diagpanel .diag-x { background: none; border: 1px solid #2b3a4a; color: #98a6b3; border-radius: 6px; width: 22px; height: 22px; cursor: pointer; }
+#diagpanel .diag-body { overflow: auto; padding: 6px 8px; }
+#diagpanel .diag-row { display: grid; grid-template-columns: 1.15fr 1.2fr auto; gap: 8px; padding: 4px 2px; border-bottom: 1px dashed #1c2733; }
+#diagpanel .diag-where { color: #9fb2c4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#diagpanel .diag-where i { color: #5d6b7a; font-style: normal; }
+#diagpanel .diag-call { color: #d0d9e2; font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#diagpanel .diag-reason { color: #d29922; font-size: 11px; }
+#diagpanel .diag-empty { padding: 18px 6px; color: #7d8b99; text-align: center; }
+#diagpanel .diag-foot { padding: 6px 10px; border-top: 1px solid #22303d; color: #6a7887; font-size: 11px; line-height: 1.5; }
