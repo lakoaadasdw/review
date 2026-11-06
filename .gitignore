@@ -1,0 +1,9 @@
+# 本机运行配置（端口/浏览器路径/上次地址），不入库
+apiflow.config.json
+.apiflow-cache.json
+
+# 临时与日志
+*.log
+node_modules/
+.DS_Store
+Thumbs.db

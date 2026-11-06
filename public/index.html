@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>apiflow · 接口调用链审阅</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header>
+  <div class="brand">apiflow <span>接口 × 调用链</span></div>
+  <div class="pills">
+    <span class="pill" id="pill-cdp">CDP 未连接</span>
+    <span class="pill" id="pill-target" hidden></span>
+    <span class="pill" id="pill-backend">后端索引…</span>
+  </div>
+  <div class="actions">
+    <select id="sel-target" title="选择本机正在运行的前端服务"></select>
+    <button id="btn-scan" title="重新扫描本机正在监听的端口">扫描</button>
+    <button id="btn-launch" title="用受控浏览器打开所选地址并开始监听">打开并监听</button>
+    <button id="btn-groups" title="展开 / 收起所有接口的方法树">展开全部</button>
+    <button id="btn-trees" title="接口层失败时是否显示后端方法树（默认隐藏）">显示方法树</button>
+    <button id="btn-motion" title="请求发生时在连线上播放一次流向高光">动效 开</button>
+    <button id="btn-zoom" title="Ctrl + 滚轮缩放，双击空白复位">100%</button>
+    <button id="btn-connect">重连浏览器</button>
+    <button id="btn-reload">重载索引</button>
+    <button id="btn-reset">清空链路</button>
+  </div>
+</header>
+
+<main>
+  <aside id="traces">
+    <div class="hint">点击页面上的按钮，这里会出现一条链路</div>
+  </aside>
+
+  <section id="canvas">
+    <div id="stage">
+      <svg id="edges"></svg>
+      <div id="nodes"></div>
+    </div>
+    <div id="empty">等待点击事件…<br /><small>Chrome 需带 <code>--remote-debugging-port=9222</code> 打开项目页面</small></div>
+  </section>
+
+  <aside id="detail">
+    <div class="d-head">
+      <h3>节点详情</h3>
+      <button id="btn-detail-fold" title="收起详情面板">收起 »</button>
+    </div>
+    <div id="detail-body"><p class="muted">选中图中任意节点查看详情</p></div>
+    <button id="btn-detail-open" title="展开详情面板">节点详情 ◀</button>
+  </aside>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

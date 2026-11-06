@@ -1,0 +1,11 @@
+{
+  "name": "apiflow",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "接口×调用链审阅工具：CDP 运行时探针 + 多语言静态适配器 + Web 图",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "index": "node src/index-java.mjs"
+  }
+}
