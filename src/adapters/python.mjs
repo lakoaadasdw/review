@@ -4,7 +4,9 @@
  * 只读源码、只做静态解析，不执行项目代码。
  */
 import { execFileSync } from 'node:child_process'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { tmpdir } from 'node:os'
 import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildCallTree, matchRoute, normalizeRoutePath, summarize } from '../graph-core.mjs'
@@ -110,7 +112,61 @@ function walkMarkers(root) {
   return counts
 }
 
+/** 目录指纹：所有 .py 的相对路径 + 大小 + mtime，用于判断缓存是否失效 */
+function dirFingerprint(root) {
+  const parts = []
+  const stack = [root]
+  while (stack.length) {
+    const dir = stack.pop()
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (VENV_SKIP.has(entry.name) || entry.name.startsWith('.')) continue
+        stack.push(join(dir, entry.name))
+      } else if (entry.isFile() && entry.name.endsWith('.py')) {
+        const abs = join(dir, entry.name)
+        let st
+        try {
+          st = statSync(abs)
+        } catch {
+          continue
+        }
+        const rel = abs.slice(root.length).split(String.fromCharCode(92)).join('/')
+        parts.push(`${rel}:${st.size}:${Math.round(st.mtimeMs)}`)
+      }
+    }
+  }
+  parts.sort()
+  return createHash('sha1').update(parts.join(String.fromCharCode(10))).digest('hex')
+}
+
+function cachePathFor(root) {
+  const key = createHash('sha1').update(root.toLowerCase()).digest('hex').slice(0, 16)
+  return join(tmpdir(), `apiflow-pyast-${key}.json`)
+}
+
 function dumpAst(root, python) {
+  const useCache = process.env.APIFLOW_NO_CACHE !== '1'
+  const cachePath = cachePathFor(root)
+  let fingerprint = null
+  if (useCache) {
+    try {
+      fingerprint = dirFingerprint(root)
+      if (existsSync(cachePath)) {
+        const cached = JSON.parse(readFileSync(cachePath, 'utf8'))
+        if (cached && cached.fingerprint === fingerprint && cached.dump) {
+          return cached.dump
+        }
+      }
+    } catch {
+      fingerprint = null
+    }
+  }
   let raw
   try {
     raw = execFileSync(python, ['-X', 'utf8', AST_DUMP, root], {
@@ -125,6 +181,13 @@ function dumpAst(root, python) {
   }
   const parsed = JSON.parse(raw)
   if (parsed.error) throw new Error(parsed.error)
+  if (useCache && fingerprint) {
+    try {
+      writeFileSync(cachePath, JSON.stringify({ fingerprint, createdAt: Date.now(), root, dump: parsed }))
+    } catch {
+      /* 缓存写失败不影响主流程 */
+    }
+  }
   return parsed
 }
 

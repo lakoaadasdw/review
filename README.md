@@ -173,3 +173,11 @@ node scripts/check-java-fixture.mjs
 2. `buildCallTree` 只从命中的那一个入口方法按调用边 BFS（默认深度 4），结果按 `METHOD path` 缓存，重复请求直接复用，只重算参数替换。
 
 实测单次匹配 ~6µs（预编译前 ~61µs）。未命中的请求会在右侧详情里标注「索引 → 未在索引中找到（可能是新加接口没重载索引，或路径/Host 不一致）」，不再静默。
+
+### Python 索引缓存
+
+Python 适配器要把 `ast_dump.py` 作为子进程跑一遍，142 文件的 FastAPI 项目冷启约 1.2s。适配器现在会按「所有 .py 的相对路径 + 大小 + mtime」算目录指纹，把 AST JSON 缓存到系统临时目录（`apiflow-pyast-<hash>.json`）：
+
+- 命中缓存（无改动）：**~0.1s**（1.2s → 0.1s，约 10×）
+- 任一 .py 改动：指纹变化 → 自动重新解析
+- 想强制禁用：`APIFLOW_NO_CACHE=1 node src/server.mjs ...`
