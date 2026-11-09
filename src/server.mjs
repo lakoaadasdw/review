@@ -510,8 +510,41 @@ function formalsOf(code, method) {
   return splitTopLevel(args).map((part) => {
     const clean = part.replace(/@[\w.]+(?:\s*\([^)]*\))?/g, ' ').replace(/\bfinal\b/g, ' ').trim()
     const words = clean.split(/\s+/).filter(Boolean)
-    return words.length ? words[words.length - 1].replace(/,$/, '') : null
+    if (!words.length) return null
+    const name = words[words.length - 1].replace(/,$/, '')
+    // 形参类型：去掉泛型与数组后缀，取最后一个标识符（`List<String> ids` → ids 是名字，List 是类型）
+    const typeRaw = words.slice(0, -1).join(' ').replace(/<[^>]*>/g, '').replace(/\[\]/g, '').trim()
+    const typeWords = typeRaw.split(/\s+/).filter(Boolean)
+    const type = typeWords.length ? typeWords[typeWords.length - 1] : ''
+    // 注解参数：@RequestParam(value = "hours", defaultValue = "24")
+    const ann = part.match(/@([\w.]+)\s*(?:\(([^)]*)\))?/)
+    const annName = ann ? ann[1] : ''
+    const annArgs = ann && ann[2] ? ann[2] : ''
+    const pick = (key) => {
+      const m = annArgs.match(new RegExp('\\b' + key + '\\s*=\\s*"([^"]*)"'))
+      return m ? m[1] : ''
+    }
+    const firstStr = (ann && ann[2] && ann[2].match(/"([^"]*)"/)) || null
+    return {
+      name,
+      type,
+      annotation: annName,
+      paramKey: pick('value') || pick('name') || (firstStr ? firstStr[1] : ''),
+      defaultValue: pick('defaultValue'),
+    }
   }).filter(Boolean)
+}
+
+/** 把 query / body 这类对象形参渲染成 `{page:1, size:20, +6}` 的紧凑形态 */
+function shapeOf(obj, maxKeys = 4) {
+  const keys = Object.keys(obj || {})
+  if (!keys.length) return null
+  const parts = keys.slice(0, maxKeys).map((k) => {
+    const v = String(obj[k])
+    return `${k}:${v.length > 18 ? v.slice(0, 18) + '…' : v}`
+  })
+  const more = keys.length > maxKeys ? `, +${keys.length - maxKeys}` : ''
+  return `{${parts.join(', ')}${more}}`
 }
 
 function callArgsAt(lines, lineNo, calleeName, startLine) {
@@ -559,11 +592,25 @@ function annotateArgs(tree, params) {
   const nodes = new Map(tree.nodes.map((n) => [n.id, n]))
   const root = nodes.get(tree.rootId)
   const scopes = new Map()
-  if (root) {
-    const m = new Map()
-    for (const name of formalsOf(root.code, root.method)) if (scope0.has(name)) m.set(name, scope0.get(name))
-    scopes.set(root.id, m)
+  const rootFormals = root ? formalsOf(root.code, root.method) : []
+  const m = new Map()
+  const DTO_SKIP = /^(String|CharSequence|Long|Integer|Int|Short|Byte|Boolean|Double|Float|BigDecimal|BigInteger|Date|Calendar|LocalDate|LocalDateTime|LocalTime|Instant|Duration|List|ArrayList|Map|HashMap|Set|HashSet|Collection|Optional|Object|Class)$/
+  for (const f of rootFormals) {
+    const key = f.paramKey || f.name
+    if (scope0.has(key)) { m.set(f.name, scope0.get(key)); continue }
+    if (scope0.has(f.name)) { m.set(f.name, scope0.get(f.name)); continue }
+    if (f.defaultValue) { m.set(f.name, f.defaultValue); continue }
+    // 对象形参（如 `AllocationQuery query`）：Spring 从 query string / body 绑定，
+    // 这里把能看到的键值汇总成 {page:1, size:20, +6} 塞进作用域，别让它显示成 null
+    const isDto = f.type && /^[A-Z]/.test(f.type) && !DTO_SKIP.test(f.type)
+    const looksContainer = /^(query|request|form|body|param|params|dto|vo|qo)$/i.test(f.name) || /Query|Request|Form|Body|Dto|DTO|Vo|VO|Qo|QO$/.test(f.type || '')
+    if (isDto || looksContainer) {
+      const src = (params.body && Object.keys(params.body).length) ? params.body : (params.query || {})
+      const shape = shapeOf(src, 4)
+      if (shape) { m.set(f.name, shape); continue }
+    }
   }
+  if (root) scopes.set(root.id, m)
   const queue = root ? [root.id] : []
   const seen = new Set(queue)
   const out = []
@@ -584,7 +631,7 @@ function annotateArgs(tree, params) {
       if (raw) {
         raw.forEach((expr, i) => {
           const r = resolveArg(expr, callerScope)
-          const name = formals[i] || 'arg' + (i + 1)
+          const name = (formals[i] && formals[i].name) || ('arg' + (i + 1))
           args.push({ name, expr: r.expr, value: r.value, resolved: r.resolved })
           if (r.resolved) childScope.set(name, r.value)
         })
@@ -607,12 +654,14 @@ function annotateArgs(tree, params) {
     const list = []
     for (const c of n.calls || []) {
       const callee = String(c.toKey || '').split('.').pop()
+      // 索引器有时会把方法签名本身当成一次自调用（`public X page(Q q)`），这里跳过
+      if (callee && callee === n.method) continue
       const raw = callee ? callArgsAt(lines, c.line, callee, n.startLine) : null
       const child = nodes.get(c.toKey)
       const cformals = child ? formalsOf(child.code, child.method) : []
       const args = (raw || []).map((expr, i) => {
         const r = resolveArg(expr, scope)
-        return { name: cformals[i] || '', expr: r.expr, value: r.value, resolved: r.resolved, index: i }
+        return { name: (cformals[i] && cformals[i].name) || '', expr: r.expr, value: r.value, resolved: r.resolved, index: i }
       })
       if (args.length) list.push({ line: c.line, callee, args })
     }
@@ -638,6 +687,7 @@ function annotateArgs(tree, params) {
       let m
       while ((m = re.exec(text))) {
         const callee = m[1].split('.').pop()
+        if (callee === n.method) continue
         const def = byName.get(callee)
         if (!def) continue
         const start = m.index + m[0].length - 1
@@ -657,7 +707,7 @@ function annotateArgs(tree, params) {
         if (!explicit.length) continue
         const args = explicit.map((expr, idx) => {
           const r = resolveArg(expr, scope)
-          return { name: formals[idx] || '', expr: r.expr, value: r.value, resolved: r.resolved }
+          return { name: (formals[idx] && formals[idx].name) || '', expr: r.expr, value: r.value, resolved: r.resolved }
         })
         const lineNo = n.startLine + i
         const bucket = merged.get(lineNo) || []
