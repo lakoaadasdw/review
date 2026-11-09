@@ -535,7 +535,7 @@ select#sel-target:focus { outline: none; border-color: #58a6ff; }
 .mcode .ln .arginline {
   margin-left: auto;
   flex: 0 1 auto;
-  max-width: 62%;
+  max-width: 78%;
   min-width: 0;
   display: inline-flex;
   align-items: center;

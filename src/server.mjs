@@ -569,17 +569,176 @@ function callArgsAt(lines, lineNo, calleeName, startLine) {
 function resolveArg(expr, scope) {
   const e = String(expr || '').trim()
   if (!e) return { expr: e, value: null, resolved: false }
-  const str = e.match(/^(["'])([\s\S]*)\1$/)
-  if (str) return { expr: e, value: str[2], resolved: true }
-  if (/^-?\d+(\.\d+)?$/.test(e) || /^(true|false|null)$/.test(e)) return { expr: e, value: e, resolved: true }
-  const call = e.match(/^([A-Za-z_$][\w$]*)\s*\(([\s\S]*)\)$/)
-  if (call) {
-    const inner = splitTopLevel(call[2])[0]
-    const r = resolveArg(inner, scope)
-    return { expr: e, value: r.resolved ? call[1] + '(' + r.value + ')' : null, resolved: r.resolved }
+  const ev = evalExpr(e, scope)
+  if (!ev.resolved) return { expr: e, value: null, resolved: false }
+  return { expr: e, value: fmtVal(ev.value), raw: ev.value, resolved: true }
+}
+
+/** 值域：字符串标量，或 { __obj, map } 表示 DTO 对象（可跟踪 setter 修改） */
+function isObjVal(v) {
+  return !!v && typeof v === 'object' && v.__obj === true
+}
+function fmtVal(v) {
+  return isObjVal(v) ? shapeOf(v.map, 2) : String(v)
+}
+function objFromShape(src) {
+  const map = {}
+  for (const [k, v] of Object.entries(src || {})) map[k] = String(v)
+  return { __obj: true, map }
+}
+function litOf(v) {
+  if (isObjVal(v)) return 'null'
+  return /^-?\d+(\.\d+)?$/.test(String(v)) ? String(v) : JSON.stringify(String(v))
+}
+
+/** 在顶层（不考虑括号/引号内部）从右往左找二元运算符，得到 { op, left, right } */
+function splitTopBinary(s) {
+  let depth = 0
+  let quote = null
+  const hits = []
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (quote) { if (ch === quote && s[i - 1] !== '\\') quote = null; continue }
+    if (ch === '"' || ch === "'") { quote = ch; continue }
+    if ('([{'.includes(ch)) depth++
+    else if (')]}'.includes(ch)) depth--
+    else if (depth === 0 && '+-*/%'.includes(ch)) {
+      const prev = s[i - 1] || ''
+      const next = s[i + 1] || ''
+      if ('+-'.includes(ch) && (i === 0 || '(+-*/%<>=!&|,'.includes(prev))) continue
+      if (next === '=' || next === ch) continue
+      if (prev === '*' && ch === '/') continue
+      hits.push({ i, op: ch })
+    }
   }
-  if (/^[A-Za-z_$][\w$]*$/.test(e) && scope.has(e)) return { expr: e, value: scope.get(e), resolved: true }
-  return { expr: e, value: null, resolved: false }
+  if (!hits.length) return null
+  // 先按优先级低的（+ -）从右取，否则取最右的 * / %
+  const low = hits.filter((h) => h.op === '+' || h.op === '-')
+  const pick = low.length ? low[low.length - 1] : hits[hits.length - 1]
+  return { op: pick.op, left: s.slice(0, pick.i).trim(), right: s.slice(pick.i + 1).trim() }
+}
+
+/** 表达式求值（字面量 / 变量 / 二元算术 / 单参包装）。不追求完整 Java 语义，够用即可 */
+function evalExpr(expr, scope) {
+  const s = String(expr || '').trim().replace(/;\s*$/, '')
+  if (!s) return { resolved: false }
+  if (s.startsWith('(') && s.endsWith(')')) {
+    const inner = s.slice(1, -1)
+    let depth = 0
+    let balanced = true
+    for (const ch of inner) { if (ch === '(') depth++; else if (ch === ')') { depth--; if (depth < 0) { balanced = false; break } } }
+    if (balanced && depth === 0) return evalExpr(inner, scope)
+  }
+  const str = s.match(/^(["'])([\s\S]*)\1$/)
+  if (str) return { value: str[2], resolved: true }
+  if (/^-?\d+(\.\d+)?$/.test(s)) return { value: s, resolved: true }
+  if (/^(true|false|null)$/.test(s)) return { value: s, resolved: true }
+  if (/^[A-Za-z_$][\w$]*$/.test(s)) return scope.has(s) ? { value: scope.get(s), resolved: true } : { resolved: false }
+  const bin = splitTopBinary(s)
+  if (bin) {
+    const a = evalExpr(bin.left, scope)
+    const b = evalExpr(bin.right, scope)
+    if (a.resolved && b.resolved) {
+      const av = isObjVal(a.value) ? NaN : Number(a.value)
+      const bv = isObjVal(b.value) ? NaN : Number(b.value)
+      if (Number.isFinite(av) && Number.isFinite(bv)) {
+        let out = NaN
+        if (bin.op === '+') out = av + bv
+        else if (bin.op === '-') out = av - bv
+        else if (bin.op === '*') out = av * bv
+        else if (bin.op === '/') out = bv ? av / bv : NaN
+        else if (bin.op === '%') out = bv ? av % bv : NaN
+        if (Number.isFinite(out)) return { value: String(out), resolved: true }
+      }
+      if (bin.op === '+' && !isObjVal(a.value) && !isObjVal(b.value)) return { value: String(a.value) + String(b.value), resolved: true }
+    }
+    return { resolved: false }
+  }
+  const call = s.match(/^([A-Za-z_$][\w$.]*)\s*\(([\s\S]*)\)$/)
+  if (call) {
+    const fn = call[1].split('.').pop()
+    const parts = splitTopLevel(call[2])
+    // Math.max(1, x) / Math.min(100, x)
+    if ((fn === 'max' || fn === 'min') && parts.length >= 2) {
+      const nums = parts.map((p) => evalExpr(p, scope))
+      if (nums.every((r) => r.resolved && Number.isFinite(Number(r.value)) && !isObjVal(r.value))) {
+        const values = nums.map((r) => Number(r.value))
+        return { value: String(fn === 'max' ? Math.max(...values) : Math.min(...values)), resolved: true }
+      }
+      return { resolved: false }
+    }
+    if (!parts.length) {
+      // getter：query.getPage() / query.getSize()；以及 query.safePage() / query.size() 这类无参查询
+      const get = s.match(/^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\(\)$/)
+      if (get) {
+        const recv = scope.get(get[1])
+        if (isObjVal(recv)) {
+          const raw = get[2]
+          const stripped = raw.replace(/^(get|is|safe|query|find|fetch)/, '')
+          const candidates = [raw, stripped, stripped.charAt(0).toLowerCase() + stripped.slice(1)]
+          for (const key of candidates) {
+            if (key && Object.prototype.hasOwnProperty.call(recv.map, key)) return { value: recv.map[key], resolved: true }
+          }
+        }
+      }
+      return { resolved: false }
+    }
+    if (parts.length === 1) {
+      const r = evalExpr(parts[0], scope)
+      if (!r.resolved) return { resolved: false }
+      if (fn === 'toUpperCase' || fn === 'trim' || fn === 'toLowerCase') return { value: String(r.value), resolved: true }
+      return { value: fn + '(' + fmtVal(r.value) + ')', resolved: true }
+    }
+  }
+  return { resolved: false }
+}
+
+/** 执行一行语句对变量的影响：receiver.setXxx(v) / 自增自减 / 复合赋值 / 普通赋值 */
+function applyLine(text, vars) {
+  const t = String(text || '').trim()
+  if (!t || t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) return
+  for (const sm of t.matchAll(/([A-Za-z_$][\w$]*)\.set([A-Z]\w*)\s*\(([\s\S]*?)\)\s*;?/g)) {
+    const cur = vars.get(sm[1])
+    if (!isObjVal(cur)) continue
+    const key = sm[2].charAt(0).toLowerCase() + sm[2].slice(1)
+    const first = splitTopLevel(sm[3])[0]
+    const r = evalExpr(first, vars)
+    if (r.resolved && !isObjVal(r.value)) { cur.map[key] = String(r.value); vars.set(sm[1], cur) }
+  }
+  const inc = t.match(/^(?:([A-Za-z_$][\w$]*)\+\+|(?:\+\+)([A-Za-z_$][\w$]*)|([A-Za-z_$][\w$]*)--|--([A-Za-z_$][\w$]*))\s*;?$/)
+  if (inc) {
+    const name = inc[1] || inc[2] || inc[3] || inc[4]
+    const n = Number(vars.get(name))
+    if (Number.isFinite(n)) vars.set(name, String(inc[3] || inc[4] ? n - 1 : n + 1))
+    return
+  }
+  const comp = t.match(/^([A-Za-z_$][\w$]*)\s*([+\-*/%])=\s*([\s\S]+?);?$/)
+  if (comp) {
+    const left = evalExpr(comp[1], vars)
+    const right = evalExpr(comp[3], vars)
+    if (left.resolved && right.resolved) {
+      const r = evalExpr(`${litOf(left.value)} ${comp[2]} ${litOf(right.value)}`, new Map())
+      if (r.resolved) vars.set(comp[1], r.value)
+    }
+    return
+  }
+  const eq = t.match(/^(?:[\w$<>\[\],.\]?\s]+?\s+)?([A-Za-z_$][\w$]*)\s*=(?!=)\s*([\s\S]+?);?$/)
+  if (eq) {
+    const r = evalExpr(eq[2], vars)
+    if (r.resolved) vars.set(eq[1], r.value)
+  }
+}
+
+/** 逐行模拟方法体，记录"进入每一行时"的变量快照（含形参被重新赋值之后的值） */
+function snapshotsOf(code, entryScope) {
+  const lines = String(code || '').split('\n')
+  const vars = new Map(entryScope)
+  const snaps = []
+  for (const text of lines) {
+    snaps.push(new Map(vars))
+    applyLine(text, vars)
+  }
+  return snaps
 }
 
 /** 基于本次请求参数，给每条调用边补上「调用点实参」（形参名 → 值） */
@@ -606,34 +765,42 @@ function annotateArgs(tree, params) {
     const looksContainer = /^(query|request|form|body|param|params|dto|vo|qo)$/i.test(f.name) || /Query|Request|Form|Body|Dto|DTO|Vo|VO|Qo|QO$/.test(f.type || '')
     if (isDto || looksContainer) {
       const src = (params.body && Object.keys(params.body).length) ? params.body : (params.query || {})
-      const shape = shapeOf(src, 4)
-      if (shape) { m.set(f.name, shape); continue }
+      const obj = objFromShape(src)
+      if (Object.keys(obj.map).length) { m.set(f.name, obj); continue }
     }
   }
   if (root) scopes.set(root.id, m)
   const queue = root ? [root.id] : []
   const seen = new Set(queue)
   const out = []
+  const snapsById = new Map()
+  const snapsFor = (node) => {
+    if (!snapsById.has(node.id)) snapsById.set(node.id, snapshotsOf(node.code, scopes.get(node.id) || scope0))
+    return snapsById.get(node.id)
+  }
   while (queue.length) {
     const fromId = queue.shift()
     const from = nodes.get(fromId)
     if (!from) continue
     const lines = String(from.code || '').split('\n')
     const callerScope = scopes.get(fromId) || scope0
+    const snaps = snapsFor(from)
     for (const e of tree.edges) {
       if (e.from !== fromId) continue
       const child = nodes.get(e.to)
       if (!child) continue
       const raw = callArgsAt(lines, e.line, child.method, from.startLine)
+      const idx = e.line - from.startLine
+      const snap = (idx >= 0 && snaps[idx]) || callerScope
       const formals = formalsOf(child.code, child.method)
       const args = []
-      const childScope = new Map(callerScope)
+      const childScope = new Map(snap)
       if (raw) {
         raw.forEach((expr, i) => {
-          const r = resolveArg(expr, callerScope)
+          const r = resolveArg(expr, snap)
           const name = (formals[i] && formals[i].name) || ('arg' + (i + 1))
           args.push({ name, expr: r.expr, value: r.value, resolved: r.resolved })
-          if (r.resolved) childScope.set(name, r.value)
+          if (r.resolved) childScope.set(name, r.raw !== undefined ? r.raw : r.value)
         })
       }
       out.push(Object.assign({}, e, args.length ? { args } : {}))
@@ -651,6 +818,7 @@ function annotateArgs(tree, params) {
     const scope = scopes.get(n.id)
     if (!scope) continue
     const lines = String(n.code || '').split(String.fromCharCode(10))
+    const snaps = snapsFor(n)
     const list = []
     for (const c of n.calls || []) {
       const callee = String(c.toKey || '').split('.').pop()
@@ -659,9 +827,11 @@ function annotateArgs(tree, params) {
       const raw = callee ? callArgsAt(lines, c.line, callee, n.startLine) : null
       const child = nodes.get(c.toKey)
       const cformals = child ? formalsOf(child.code, child.method) : []
+      const snap = snaps[c.line - n.startLine] || scope
       const args = (raw || []).map((expr, i) => {
-        const r = resolveArg(expr, scope)
-        return { name: (cformals[i] && cformals[i].name) || '', expr: r.expr, value: r.value, resolved: r.resolved, index: i }
+        const r = resolveArg(expr, snap)
+        const fallback = /^[A-Za-z_$][\w$]*$/.test(expr) ? expr : '#' + (i + 1)
+        return { name: (cformals[i] && cformals[i].name) || fallback, expr: r.expr, value: r.value, resolved: r.resolved, index: i }
       })
       if (args.length) list.push({ line: c.line, callee, args })
     }
@@ -678,6 +848,7 @@ function annotateArgs(tree, params) {
     const scope = scopes.get(n.id)
     if (!scope) continue
     const lines = String(n.code || '').split(String.fromCharCode(10))
+    const snaps = snapsFor(n)
     const merged = new Map((n.callArgs || []).map((x) => [x.line, (x.items || [{ callee: x.callee || '', args: x.args || [] }]).slice()]))
     for (let i = 0; i < lines.length; i++) {
       const text = lines[i]
@@ -705,9 +876,12 @@ function annotateArgs(tree, params) {
         const formals = formalsOf(def.code, def.method)
         const explicit = splitTopLevel(body)
         if (!explicit.length) continue
+        const lineSnap = snaps[i] || scope
         const args = explicit.map((expr, idx) => {
-          const r = resolveArg(expr, scope)
-          return { name: (formals[idx] && formals[idx].name) || '', expr: r.expr, value: r.value, resolved: r.resolved }
+          const r = resolveArg(expr, lineSnap)
+          // 形参名拿不到（例如 Mapper 接口方法被 XML 节点替换）时，退回用实参表达式本身当名字
+          const fallback = /^[A-Za-z_$][\w$]*$/.test(expr) ? expr : '#' + (idx + 1)
+          return { name: (formals[idx] && formals[idx].name) || fallback, expr: r.expr, value: r.value, resolved: r.resolved }
         })
         const lineNo = n.startLine + i
         const bucket = merged.get(lineNo) || []
@@ -943,8 +1117,11 @@ const server = createServer(async (req, res) => {
 })
 
 await loadSavedConfig()
-void loadBackend()
-server.listen(CONFIG.port, () => {
+if (process.env.APIFLOW_TEST !== '1') void loadBackend()
+// 测试入口：APIFLOW_TEST=1 时只导出内部函数，不监听端口、不连浏览器
+export { annotateArgs, evalExpr, formalsOf, applyLine, snapshotsOf }
+
+if (process.env.APIFLOW_TEST !== '1') server.listen(CONFIG.port, () => {
   console.log(`[apiflow] http://127.0.0.1:${CONFIG.port}`)
   console.log(`[apiflow] adapter: ${CONFIG.lang} -> ${state.backend.adapter || '?'}${state.backend.summary?.lang ? ` (${state.backend.summary.lang})` : ''}`)
 console.log(`[apiflow] backend: ${CONFIG.backendRoot} -> ${state.backend.summary ? `${state.backend.summary.routes} routes / ${state.backend.summary.controllers} controllers` : `ERROR ${state.backend.error}`}`)
