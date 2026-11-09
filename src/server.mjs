@@ -16,6 +16,7 @@ import { listAdapters, pickAdapter } from './adapters/index.mjs'
 import { buildFrontendChain } from './frontend-graph.mjs'
 import { browserStatus, defaultUserDataDir, ensureBrowser, findChrome, listPages, openTarget } from './browser.mjs'
 import { scanFrontends } from './scan.mjs'
+import { explainNodes } from './explain.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -38,6 +39,11 @@ const CONFIG = {
   chainDepth: Number(arg('depth', process.env.APIFLOW_DEPTH || 4)),
   lang: arg('lang', process.env.APIFLOW_LANG || 'auto'),
   python: arg('python', process.env.APIFLOW_PYTHON || 'python'),
+  explain: {
+    apiKey: process.env.APIFLOW_LLM_KEY || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY || '',
+    baseUrl: process.env.APIFLOW_LLM_BASE || 'https://api.deepseek.com',
+    model: process.env.APIFLOW_LLM_MODEL || 'deepseek-chat',
+  },
   frontendRoot: arg('frontend', process.env.APIFLOW_FRONTEND || '<local-path>'),
   chromePath: arg('chrome', process.env.APIFLOW_CHROME || ''),
   userDataDir: arg('user-data', process.env.APIFLOW_USER_DATA || defaultUserDataDir()),
@@ -54,6 +60,11 @@ async function loadSavedConfig() {
     if (typeof j.chromePath === 'string' && !argGiven('chrome')) CONFIG.chromePath = j.chromePath
     if (typeof j.userDataDir === 'string' && j.userDataDir && !argGiven('user-data')) CONFIG.userDataDir = j.userDataDir
     if (typeof j.lastUrl === 'string') CONFIG.lastUrl = j.lastUrl
+    if (j.explain && typeof j.explain === 'object') {
+      if (typeof j.explain.apiKey === 'string' && j.explain.apiKey) CONFIG.explain.apiKey = j.explain.apiKey
+      if (typeof j.explain.baseUrl === 'string' && j.explain.baseUrl) CONFIG.explain.baseUrl = j.explain.baseUrl
+      if (typeof j.explain.model === 'string' && j.explain.model) CONFIG.explain.model = j.explain.model
+    }
   } catch {}
 }
 
@@ -1028,6 +1039,7 @@ function snapshot() {
     backend: state.backend,
     adapters: state.adapters,
     traces,
+    explain: { ready: !!CONFIG.explain.apiKey, model: CONFIG.explain.model },
   }
 }
 
@@ -1038,6 +1050,22 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
       res.end(JSON.stringify(snapshot()))
       return
+    }
+    if (url.pathname === '/api/explain' && req.method === 'POST') {
+      const body = await readJsonBody(req)
+      const wanted = body.traceId || state.order[state.order.length - 1]
+      const trace = state.traces.get(wanted)
+      if (!trace) return sendJson(res, 404, { error: 'trace 不存在（先触发一次请求）' })
+      const nodes = []
+      for (const b of trace.backends || []) {
+        for (const n of b.nodes || []) {
+          if (!n || !n.method) continue
+          nodes.push({ id: n.id, cls: n.cls, method: n.method, file: n.file, startLine: n.startLine, code: n.code, xmlTag: n.xmlTag })
+        }
+      }
+      if (!nodes.length) return sendJson(res, 200, { items: {}, source: 'none', pending: 0 })
+      const out = await explainNodes(nodes, { root: CONFIG.backendRoot, llm: CONFIG.explain })
+      return sendJson(res, 200, out)
     }
     if (url.pathname === '/api/routes') {
       const list = (index?.routes || []).map((r) => ({ method: r.method, path: r.path, controller: r.controller, javaMethod: r.javaMethod, file: r.file, line: r.line, chain: (r.chain || []).length }))

@@ -584,3 +584,31 @@ select#sel-target:focus { outline: none; border-color: #58a6ff; }
 #diagpanel .diag-reason { color: #d29922; font-size: 11px; }
 #diagpanel .diag-empty { padding: 18px 6px; color: #7d8b99; text-align: center; }
 #diagpanel .diag-foot { padding: 6px 10px; border-top: 1px solid #22303d; color: #6a7887; font-size: 11px; line-height: 1.5; }
+
+/* 方法解释 */
+.mcard .mhead .mexp {
+  flex: 0 0 auto;
+  width: 14px; height: 14px; line-height: 14px; text-align: center;
+  border-radius: 50%;
+  font: 10px/14px ui-monospace, monospace;
+  color: #7ee787; background: rgba(63,185,80,.12);
+  border: 1px solid rgba(63,185,80,.3);
+  cursor: help;
+}
+.expbox {
+  margin-top: 12px; padding: 8px 10px;
+  border: 1px solid rgba(110,168,254,.22); border-radius: 6px;
+  background: rgba(56,139,253,.06);
+  font: 12px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+.expbox > b { color: #8fb6ff; margin-right: 6px; }
+.expbadge {
+  display: inline-block; padding: 0 5px; border-radius: 4px;
+  font-size: 10px; color: #7ee787; background: rgba(63,185,80,.12);
+  border: 1px solid rgba(63,185,80,.3);
+}
+.expbadge.llm { color: #9ecbff; background: rgba(56,139,253,.14); border-color: rgba(56,139,253,.3); }
+.expbadge.rule { color: #d29922; background: rgba(210,153,34,.12); border-color: rgba(210,153,34,.3); }
+.expbox .seprow { display: flex; gap: 8px; margin-top: 4px; }
+.expbox .sepk { flex: 0 0 40px; color: #8b949e; }
+.expbox .sepv { flex: 1 1 auto; color: #c9d1d9; }

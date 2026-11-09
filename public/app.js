@@ -30,9 +30,42 @@ function methodColorRef(key) {
   return { idx, color: METHOD_COLORS[idx] }
 }
 
-const view = { data: null, traceId: null, selected: null, expanded: new Map(), collapsed: new Map(), timer: null, dragPos: new Map(), motion: localStorage.getItem('apiflow.motion') !== '0', paramsOn: localStorage.getItem('apiflow.params') !== '0', showClicks: localStorage.getItem('apiflow.showClicks') === '1', _newestTraceId: null, _pbar: '', seenAt: {}, seenCount: {}, _sig: '' }
+const view = { data: null, traceId: null, selected: null, expanded: new Map(), collapsed: new Map(), timer: null, dragPos: new Map(), motion: localStorage.getItem('apiflow.motion') !== '0', paramsOn: localStorage.getItem('apiflow.params') !== '0', showClicks: localStorage.getItem('apiflow.showClicks') === '1', _newestTraceId: null, _pbar: '', seenAt: {}, seenCount: {}, _sig: '', explain: { traceId: '', loading: false, items: {}, source: '', error: '' } }
 
 const $ = (id) => document.getElementById(id)
+
+/** 取某个方法的解释短句（用于卡头 tooltip 与 ? 标记） */
+function expOf(nodeId) {
+  const it = view.explain && view.explain.items ? view.explain.items[nodeId] : null
+  return it && it.short ? it.short : ''
+}
+function expDetailOf(nodeId) {
+  const it = view.explain && view.explain.items ? view.explain.items[nodeId] : null
+  return it || null
+}
+
+/** 首次打开某条 trace 时按需生成解释（同一 trace 只请求一次） */
+async function ensureExplain(trace) {
+  if (!trace || !trace.backends || !trace.backends.length) return
+  if (!view.explain) view.explain = { traceId: '', loading: false, items: {} }
+  if (view.explain.traceId === trace.id || view.explain.loading) return
+  view.explain.loading = true
+  view.explain.traceId = trace.id
+  try {
+    const out = await api('/api/explain', 'POST', { traceId: trace.id })
+    view.explain.items = (out && out.items) || {}
+    view.explain.source = (out && out.source) || ''
+    view.explain.error = (out && out.error) || ''
+    view.explain.ready = !!(view.data && view.data.explain && view.data.explain.ready)
+  } catch (e) {
+    view.explain.error = String(e && e.message ? e.message : e)
+  } finally {
+    view.explain.loading = false
+    view._sig = ''
+    renderGraph()
+    if (activeTrace()) renderDetail(activeTrace())
+  }
+}
 
 async function api(path, method = 'GET', body) {
   const res = await fetch(path, {
@@ -673,6 +706,7 @@ function renderGraph() {
     return
   }
   empty.hidden = true
+  if (trace.backends && trace.backends.length) void ensureExplain(trace)
 
   // 轮询每 700ms 调一次 renderGraph；数据没变就别重建 DOM，
   // 否则一次性「流动」动画会被反复重放或直接打断。
@@ -989,9 +1023,9 @@ function renderGraph() {
           : ''
         html += `<div class="mcard ${open ? 'open' : ''} ${view.selected === key ? 'sel' : ''} ${badAll ? 'err' : ''}"
           style="left:${p.x}px;top:${p.y}px;width:${g.cardW || CARD_W}px" data-id="${escapeHtml(key)}" data-key="${escapeHtml(key)}">
-          <div class="mhead" data-act="toggle">
+          <div class="mhead" data-act="toggle"${expOf(n.id) ? ` title="${escapeHtml(expOf(n.id))}"` : ''}>
             <span class="mchev">${open ? '▾' : '▸'}</span>
-            <span class="mname">${escapeHtml(n.cls)}.${escapeHtml(n.method)}()</span>
+            <span class="mname">${escapeHtml(n.cls)}.${escapeHtml(n.method)}()</span>${expOf(n.id) ? `<span class="mexp" title="${escapeHtml(expOf(n.id))}">?</span>` : ''}
             ${n.xml ? `<span class="mtag">${n.xmlTag === 'sql' ? 'SQL' : 'XML'}</span>` : ''}${parentChip}
             <span class="mfile">${escapeHtml(baseName(n.file))}:${n.startLine}</span>
             <span class="mcall">${callableCount ? `${callableCount} 处调用` : ''}</span>
@@ -1216,6 +1250,26 @@ function renderBody(meta, nid) {
 }
 
 let lastRenderedTrace = null
+/** 详情里的解释块：四类（作用 / 数据流转 / 业务语义 / 风险） */
+function expHtml(nodeId) {
+  const ex = view.explain || {}
+  const it = expDetailOf(nodeId)
+  if (!it) {
+    if (ex.loading) return '<div class="expbox"><b>解释</b><div class="muted">正在生成…</div></div>'
+    if (ex.error) return `<div class="expbox"><b>解释</b><div class="muted">生成失败：${escapeHtml(ex.error)}</div></div>`
+    return ''
+  }
+  const badge = it.cached ? '<span class="expbadge">缓存</span>' : (it.source === 'llm' ? '<span class="expbadge llm">模型</span>' : '<span class="expbadge rule">规则</span>')
+  const row = (k, v) => (v ? `<div class="seprow"><span class="sepk">${k}</span><span class="sepv">${escapeHtml(v)}</span></div>` : '')
+  return `<div class="expbox"><b>解释</b>${badge}
+    ${row('作用', it.purpose)}
+    ${row('流转', it.flow)}
+    ${row('业务', it.biz)}
+    ${row('风险', it.risk)}
+    ${!view.data?.explain?.ready ? '<div class="muted" style="margin-top:6px">未配置模型 key（可用规则解释）；在 apiflow.config.json 加 <code>explain.apiKey</code> 后即可用模型生成。</div>' : ''}
+  </div>`
+}
+
 function renderDetail(trace) {
   lastRenderedTrace = trace
   const body = $('detail-body')
@@ -1249,6 +1303,7 @@ function renderDetail(trace) {
         ${m.xml ? `<b>语句</b><span>&lt;${m.xmlTag || 'select'}&gt; ${escapeHtml(m.method)}</span>` : ''}
         <b>路由</b><span>${escapeHtml(`${backend.route.method} ${backend.route.path}`)}</span>
       </div>
+      ${expHtml(m.id)}
       <h3 style="margin-top:14px">方法内调用（点行号展开）</h3>${calls}`
       body.querySelectorAll('a[data-key]').forEach((a) => {
         a.onclick = (ev) => { ev.preventDefault(); expansionSet(trace).add(a.dataset.key); renderGraph() }

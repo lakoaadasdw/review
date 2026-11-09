@@ -5,7 +5,7 @@
 
 后端部分以「源码卡片」呈现：每个方法展示完整代码，**方法里哪一行调用了别的方法，就从那一行拉一条线**接到被调方法的完整源码卡片；异常链路整条变红，并标出**最早失败的根因**。用于人工快速审阅、定位 bug。
 
-当前版本：v0.24（扫描器支持 IPv6 回环、无 Chrome 时自动拉起调试浏览器；调用图 + 源码卡片 + 重复请求折叠 + 自由拖动 + 缩放 + 多接口分组与折叠 + 响应体 JSON 树 + MyBatis XML 映射 + 异常根因标记 + 接口层失败隐藏方法链 + 前端调用链 + 流向高光 + **多语言适配器**：`graph-core` 语言无关图逻辑 + `adapters/java`、`adapters/python`，`--lang auto|java|python` 自动识别；Python 走 stdlib `ast` 静态解析（含原生 SQL 字面量卡片），Python 见 `docs/screenshot-python.png`、`docs/screenshot-python-sql.png`）。
+当前版本：v0.25（扫描器支持 IPv6 回环、无 Chrome 时自动拉起调试浏览器；调用图 + 源码卡片 + 重复请求折叠 + 自由拖动 + 缩放 + 多接口分组与折叠 + 响应体 JSON 树 + MyBatis XML 映射 + 异常根因标记 + 接口层失败隐藏方法链 + 前端调用链 + 流向高光 + **多语言适配器**：`graph-core` 语言无关图逻辑 + `adapters/java`、`adapters/python`，`--lang auto|java|python` 自动识别；Python 走 stdlib `ast` 静态解析（含原生 SQL 字面量卡片），Python 见 `docs/screenshot-python.png`、`docs/screenshot-python-sql.png`；**方法解释**：卡片 `?` 悬停一句话、右侧详情给「作用/流转/业务/风险」，规则打底、可接模型、按方法落盘缓存）。
 
 ## 它是怎么拿到数据的
 
@@ -182,3 +182,36 @@ Python 适配器要把 `ast_dump.py` 作为子进程跑一遍，142 文件的 Fa
 - 命中缓存（无改动）：**~0.1s**（1.2s → 0.1s，约 10×）
 - 任一 .py 改动：指纹变化 → 自动重新解析
 - 想强制禁用：`APIFLOW_NO_CACHE=1 node src/server.mjs ...`
+
+
+### 方法解释（规则打底 + 可选模型）
+
+链路上每个方法卡片标题栏右侧有个 `?`，鼠标悬停是一句话作用；点开卡片，右侧详情里多一块「解释」，分四行：
+
+- **作用**：这个方法干什么（如「查询数据」「统计/聚合计算」「MyBatis 查询：SELECT COUNT(*) …」）
+- **流转**：入参 → 关键处理 → 返回
+- **业务**：它在哪个业务动作里（模型生成时才有）
+- **风险**：异常分支/数据库读写注意点
+
+两档来源：
+
+1. **规则**（默认，零依赖）：按方法名动词、注解、返回类型、MyBatis `select` 节点拼句子。够用但糙。
+2. **模型**（可选）：配了 key 就走 OpenAI 兼容的 `/chat/completions`，一次请求批量问当前 trace 的所有方法，拿到 JSON 后覆盖规则文案。
+
+配置方式（任选其一，优先环境变量）：
+
+```bash
+# 1) 环境变量
+set APIFLOW_LLM_KEY=sk-xxx
+set APIFLOW_LLM_BASE=https://api.deepseek.com     # 可选
+set APIFLOW_LLM_MODEL=deepseek-chat               # 可选
+
+# 2) 或写进 apiflow.config.json
+{ "explain": { "apiKey": "sk-xxx", "baseUrl": "https://api.deepseek.com", "model": "deepseek-chat" } }
+```
+
+缓存：`%TEMP%piflow-explain-<后端路径 hash>.json`，键是 `文件::类::方法`，值是方法体 hash + 四段解释。
+**方法体没改就直接读缓存**（模型/规则都算命中）；方法体改了 hash 变 → 只重算那一个方法。
+规则结果也会落盘（没 key 也能二次打开秒出）；之后配了 key，命中「规则」缓存会自动升级成模型解释。
+
+界面：`docs/screenshot-explain.png`。
