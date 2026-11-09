@@ -389,11 +389,28 @@ function layoutMethods(trace, expanded, collapsed, topY = GRAPH_TOP, hidden = ne
     for (const e of backend.edges) parentOf.set(e.to, { id: e.from, line: e.line })
 
     // 每棵树按自己的最长源码行定卡片宽度/列数：短代码的树能排成多列，别被全局长行拖成一列
+    // 行尾实参也要算进宽度，否则代码会被挤成省略号（方法名看不清）
     let maxLen = 0
+    let maxPx = 0
     for (const n of backend.nodes) {
-      for (const line of String(n.code || '').split(/\r?\n/)) if (line.length > maxLen) maxLen = line.length
+      const lines = String(n.code || '').split(/\r?\n/)
+      const argByLine = new Map()
+      for (const ca of n.callArgs || []) argByLine.set(ca.line, ca.items || [])
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].length > maxLen) maxLen = lines[i].length
+        const groups = argByLine.get((n.startLine || 1) + i) || []
+        let extra = 0
+        for (const grp of groups) {
+          extra += grp.callee ? String(grp.callee).length + 2 : 0
+          const all = (grp.args || []).filter((a) => a.resolved || (a.name && String(a.expr).length <= 24))
+          for (const a of all.slice(0, 2)) extra += String(a.name || '').length + 1 + String(a.value).length + 5
+          if (all.length > 2) extra += 5
+        }
+        const px = lines[i].length * 6.9 + 34 + extra * 6.2
+        if (px > maxPx) maxPx = px
+      }
     }
-    const treeW = Math.min(1100, Math.max(CARD_W, Math.ceil(maxLen * 6.9) + 88))
+    const treeW = Math.min(1500, Math.max(CARD_W, Math.ceil(maxPx)))
     // 调用图向右展开（画布可平移缩放），只有深度超过 6 层才折行，避免整棵树被挤成一条竖线
     let maxDepth = 0
     for (const n of backend.nodes) maxDepth = Math.max(maxDepth, n.depth || 0)

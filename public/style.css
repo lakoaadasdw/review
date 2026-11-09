@@ -530,17 +530,15 @@ select#sel-target:focus { outline: none; border-color: #58a6ff; }
 
 /* 调用行右侧的实参标注：形参名=本次请求带入的值（不另起一行） */
 .mcode .ln { display: flex; align-items: center; gap: 6px; }
-.mcode .ln .ltext { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.mcode .ln .ltext { flex: 0 0 auto; white-space: pre; }
 .mcode .ln .lgo { flex: 0 0 auto; }
 .mcode .ln .arginline {
   margin-left: auto;
-  flex: 0 1 auto;
-  max-width: 78%;
-  min-width: 0;
+  flex: 0 0 auto;
+  max-width: none;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  overflow: hidden;
   font: 10.5px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 .mcode .ln .arginline .argv {
@@ -551,9 +549,7 @@ select#sel-target:focus { outline: none; border-color: #58a6ff; }
   border-radius: 4px;
   padding: 0 5px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 320px;
+  max-width: none;
   vertical-align: middle;
 }
 .mcode .ln .arginline .argv.more {
