@@ -536,7 +536,7 @@ function formalsOf(code, method) {
 }
 
 /** 把 query / body 这类对象形参渲染成 `{page:1, size:20, +6}` 的紧凑形态 */
-function shapeOf(obj, maxKeys = 4) {
+function shapeOf(obj, maxKeys = 2) {
   const keys = Object.keys(obj || {})
   if (!keys.length) return null
   const parts = keys.slice(0, maxKeys).map((k) => {

@@ -13,7 +13,7 @@ const FE_LINE = 13
 const CARD_W = 470
 const HEAD_H = 28
 const LINE_H = 15
-const ARG_LINE_H = 19
+const ARG_LINE_H = 0 // 实参已改为行内右侧展示，不再额外占行
 const CODE_PAD = 8
 const COL_GAP = 90
 const GRAPH_TOP = 132   // 顶部流程条与分组之间留一条走线通道（y≈112）
@@ -989,17 +989,19 @@ function renderGraph() {
               : (edgeArgs.length ? [{ callee: '', args: edgeArgs }] : [])
             const argLine = groups.length
               ? groups.map((grp) => {
-                const shown = grp.args.filter((a) => a.resolved || (a.name && String(a.expr).length <= 24))
-                if (!shown.length) return ''
-                return `<div class="argline">${grp.callee ? `<span class="argcallee">${escapeHtml(grp.callee)}()</span>` : ''}${shown.map((a) => {
+                const all = grp.args.filter((a) => a.resolved || (a.name && String(a.expr).length <= 24))
+                if (!all.length) return ''
+                const shown = all.slice(0, 2)
+                const extra = all.length - shown.length
+                return `<span class="arginline">${grp.callee ? `<span class="argcallee">${escapeHtml(grp.callee)}()</span>` : ''}${shown.map((a) => {
                   const label = a.name ? `${a.name}=${a.value}` : (String(a.value) === String(a.expr) ? String(a.value) : `${a.expr}=${a.value}`)
                   return a.resolved
-                    ? `<span class="argv">${escapeHtml(label)}</span>`
+                    ? `<span class="argv" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`
                     : `<span class="argv miss" title="没能从本次请求参数里解析出值">${escapeHtml(label)}</span>`
-                }).join('')}</div>`
+                }).join('')}${extra > 0 ? `<span class="argv more" title="${escapeHtml(all.slice(2).map((a) => `${a.name || a.expr}=${a.value}`).join(' '))}">+${extra}</span>` : ''}</span>`
               }).join('')
               : ''
-            return `<div class="ln ${calls.length ? 'callable' : ''}"${calls.length ? ` data-targets="${escapeHtml(targets)}"` : ''}><span class="lno">${n.xml ? '·' : lineNo}</span><span class="ltext">${escapeHtml(text) || ' '}</span>${calls.length ? '<span class="lgo">↳</span>' : ''}</div>${argLine}`
+            return `<div class="ln ${calls.length ? 'callable' : ''}"${calls.length ? ` data-targets="${escapeHtml(targets)}"` : ''}><span class="lno">${n.xml ? '·' : lineNo}</span><span class="ltext">${escapeHtml(text) || ' '}</span>${calls.length ? '<span class="lgo">↳</span>' : ''}${argLine}</div>`
           }).join('')}</div>` : ''}
         </div>`
       }

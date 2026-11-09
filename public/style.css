@@ -528,31 +528,49 @@ select#sel-target:focus { outline: none; border-color: #58a6ff; }
 }
 .trace-toggle:hover { border-color: #58a6ff; color: #c9d1d9; }
 
-/* 调用行下方的实参标注：形参名=本次请求带入的值 */
-.mcode .argline {
-  padding: 2px 0 3px 46px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+/* 调用行右侧的实参标注：形参名=本次请求带入的值（不另起一行） */
+.mcode .ln { display: flex; align-items: center; gap: 6px; }
+.mcode .ln .ltext { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.mcode .ln .lgo { flex: 0 0 auto; }
+.mcode .ln .arginline {
+  margin-left: auto;
+  flex: 0 1 auto;
+  max-width: 62%;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  font: 10.5px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
 }
-.mcode .argline .argv {
+.mcode .ln .arginline .argv {
+  display: inline-block;
   color: #7ee787;
   background: rgba(63, 185, 80, .12);
   border: 1px solid rgba(63, 185, 80, .28);
   border-radius: 4px;
   padding: 0 5px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+  vertical-align: middle;
 }
-.mcode .argline .argv.miss {
+.mcode .ln .arginline .argv.more {
+  color: #8b98a8;
+  background: rgba(139, 148, 158, .10);
+  border-color: rgba(139, 148, 158, .28);
+  max-width: none;
+}
+.mcode .ln .arginline .argv.miss {
   color: #8b949e;
   background: rgba(139, 148, 158, .08);
   border-color: rgba(139, 148, 158, .25);
 }
-.mcode .argline .argcallee {
+.mcode .ln .arginline .argcallee {
   color: #6e7681;
-  font-size: 10.5px;
-  margin-right: 2px;
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 /* 索引诊断（未解析调用）面板 */
