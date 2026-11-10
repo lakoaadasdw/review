@@ -198,7 +198,10 @@ Python 适配器要把 `ast_dump.py` 作为子进程跑一遍，142 文件的 Fa
 1. **规则**（默认，零依赖）：按方法名动词、注解、返回类型、MyBatis `select` 节点拼句子。够用但糙。
 2. **模型**（可选）：配了 key 就走 OpenAI 兼容的 `/chat/completions`，一次请求批量问当前 trace 的所有方法，拿到 JSON 后覆盖规则文案。
 
-配置方式（任选其一，优先环境变量）：
+配置方式之一：**页面上点「设置」**（推荐）。工具栏「设置」按钮打开弹窗，填 API Key / Base URL / Model，点「保存」立即生效（不用重启），可「测试连接」、可「清除 key」。
+key 写进后端本机的 `apiflow.config.json`（`.gitignore` 已排除），接口只回传掩码（如 `sk-te***abcd`），前端不回显明文；Escape 或点遮罩关闭弹窗。
+
+也可以用配置文件或环境变量（任选其一，环境变量优先）：
 
 ```bash
 # 1) 环境变量
@@ -214,4 +217,4 @@ set APIFLOW_LLM_MODEL=deepseek-chat               # 可选
 **方法体没改就直接读缓存**（模型/规则都算命中）；方法体改了 hash 变 → 只重算那一个方法。
 规则结果也会落盘（没 key 也能二次打开秒出）；之后配了 key，命中「规则」缓存会自动升级成模型解释。
 
-界面：`docs/screenshot-explain.png`。
+界面：`docs/screenshot-explain.png`；设置弹窗：`docs/screenshot-settings.png`、`docs/screenshot-settings-saved.png`。

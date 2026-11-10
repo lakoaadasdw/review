@@ -612,3 +612,47 @@ select#sel-target:focus { outline: none; border-color: #58a6ff; }
 .expbox .seprow { display: flex; gap: 8px; margin-top: 4px; }
 .expbox .sepk { flex: 0 0 40px; color: #8b949e; }
 .expbox .sepv { flex: 1 1 auto; color: #c9d1d9; }
+
+/* 设置弹窗 */
+#cfgmodal {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(1, 4, 9, .62);
+  display: flex; align-items: center; justify-content: center;
+}
+#cfgmodal[hidden] { display: none; }
+.cfgbox {
+  width: 460px; max-width: calc(100vw - 32px);
+  background: #0d1117; border: 1px solid #2b3a4a; border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .5);
+  font: 13px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: #c9d1d9;
+}
+.cfgh {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border-bottom: 1px solid #21262d;
+}
+.cfgh b { color: #e6edf3; font-size: 13px; }
+.cfgh button {
+  background: none; border: 0; color: #8b949e; font-size: 18px; line-height: 1; cursor: pointer;
+}
+.cfgb { padding: 12px; }
+.cfgb label { display: block; margin-bottom: 10px; color: #8b949e; font-size: 12px; }
+.cfgb input {
+  display: block; width: 100%; margin-top: 4px; box-sizing: border-box;
+  background: #010409; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+  padding: 7px 9px; font: 12.5px/1.5 ui-monospace, Consolas, monospace;
+}
+.cfgb input:focus { outline: none; border-color: #388bfd; }
+.cfgtip { color: #6e7681; font-size: 11.5px; margin: 2px 0 10px; }
+.cfgrow { display: flex; gap: 8px; }
+.cfgrow button {
+  flex: 0 0 auto; background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+  border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 12.5px;
+}
+.cfgrow button:hover { border-color: #58a6ff; color: #fff; }
+.cfgrow button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.cfgrow button.primary:hover { background: #388bfd; }
+.cfgrow button:disabled { opacity: .6; cursor: default; }
+.cfgstatus { min-height: 18px; margin-top: 10px; font-size: 12px; color: #8b949e; }
+.cfgstatus.ok { color: #7ee787; }
+.cfgstatus.bad { color: #f85149; }

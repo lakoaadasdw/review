@@ -1600,3 +1600,93 @@ setInterval(() => {
 
 tick()
 view.timer = setInterval(() => { if (!document.hidden) tick() }, 700)
+
+// —— 设置：方法解释的 key / 端点 / 模型 ——
+const cfgModal = $('cfgmodal')
+const cfgStatusEl = $('cfg-status')
+
+function cfgSay(text, kind) {
+  if (!cfgStatusEl) return
+  cfgStatusEl.textContent = text || ''
+  cfgStatusEl.className = 'cfgstatus' + (kind ? ' ' + kind : '')
+}
+
+async function openCfg() {
+  try {
+    const out = await api('/api/config')
+    const e = (out && out.explain) || {}
+    $('cfg-base').value = e.baseUrl || ''
+    $('cfg-model').value = e.model || ''
+    $('cfg-key').value = ''
+    $('cfg-key').placeholder = e.keyMask
+      ? `已保存 ${e.keyMask}（留空则沿用；输入新 key 会覆盖）`
+      : 'sk-…（留空表示不修改）'
+    cfgSay(e.ready ? (e.fromEnv ? '当前 key 来自环境变量（优先级高于本文件）' : '已配置 key') : '还没配置 key，现在用的是规则解释')
+  } catch (err) {
+    cfgSay('读取配置失败：' + err.message, 'bad')
+  }
+  cfgModal.hidden = false
+  setTimeout(() => $('cfg-key').focus(), 30)
+}
+
+function closeCfg() { cfgModal.hidden = true }
+
+function afterCfgChange(explain, note) {
+  view.explain = { traceId: '', loading: false, items: {}, source: '', error: '' }
+  if (view.data && view.data.explain) view.data.explain.ready = !!(explain && explain.ready)
+  view._sig = ''
+  renderGraph()
+  const tr = activeTrace()
+  if (tr) renderDetail(tr)
+  cfgSay(note, 'ok')
+}
+
+if ($('btn-cfg')) {
+  $('btn-cfg').onclick = openCfg
+  $('cfg-close').onclick = closeCfg
+  cfgModal.addEventListener('click', (ev) => { if (ev.target === cfgModal) closeCfg() })
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && !cfgModal.hidden) closeCfg() })
+
+  $('cfg-save').onclick = async () => {
+    const apiKey = $('cfg-key').value.trim()
+    const baseUrl = $('cfg-base').value.trim()
+    const model = $('cfg-model').value.trim()
+    $('cfg-save').disabled = true
+    try {
+      const out = await api('/api/config/explain', 'POST', { apiKey, baseUrl, model })
+      if (!out.ok) throw new Error(out.error || '保存失败')
+      $('cfg-key').value = ''
+      afterCfgChange(out.explain, out.explain.ready ? `已保存（${out.explain.keyMask}），重新打开链路会用模型生成` : '已保存（未设置 key，仍用规则解释）')
+    } catch (err) {
+      cfgSay('保存失败：' + err.message, 'bad')
+    } finally {
+      $('cfg-save').disabled = false
+    }
+  }
+
+  $('cfg-test').onclick = async () => {
+    $('cfg-test').disabled = true
+    cfgSay('测试中…')
+    try {
+      const out = await api('/api/explain/test', 'POST', {})
+      if (out.ok) cfgSay(`连接正常 · ${out.model} · ${out.ms}ms · 回包「${out.sample || ''}」`, 'ok')
+      else cfgSay(`连接失败：${out.error}`, 'bad')
+    } catch (err) {
+      cfgSay('测试失败：' + err.message, 'bad')
+    } finally {
+      $('cfg-test').disabled = false
+    }
+  }
+
+  $('cfg-clear').onclick = async () => {
+    if (!confirm('清除已保存的 key？之后方法解释会退回规则模式。')) return
+    try {
+      const out = await api('/api/config/explain', 'POST', { clear: true })
+      $('cfg-key').value = ''
+      $('cfg-key').placeholder = 'sk-…（留空表示不修改）'
+      afterCfgChange(out.explain, '已清除 key，当前用规则解释')
+    } catch (err) {
+      cfgSay('清除失败：' + err.message, 'bad')
+    }
+  }
+}

@@ -260,3 +260,31 @@ export async function explainNodes(nodes, opts = {}) {
   saveCache(file, data)
   return { items, source, error, cacheFile: file, pending: pending.length }
 }
+
+/** 连通性测试：最小请求，确认 key/端点/模型可用 */
+export async function pingLLM(conf) {
+  const base = String(conf.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '')
+  const url = /\/chat\/completions$/.test(base) ? base : `${base}/chat/completions`
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 20000)
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${conf.apiKey}` },
+      body: JSON.stringify({
+        model: conf.model || 'deepseek-chat',
+        max_tokens: 16,
+        temperature: 0,
+        messages: [{ role: 'user', content: 'ping，只回 ok' }],
+      }),
+      signal: ctrl.signal,
+    })
+    const text = await res.text()
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${text.slice(0, 160)}`)
+    let parsed = null
+    try { parsed = JSON.parse(text) } catch {}
+    return (parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].message && parsed.choices[0].message.content) || text.slice(0, 60)
+  } finally {
+    clearTimeout(timer)
+  }
+}

@@ -16,7 +16,7 @@ import { listAdapters, pickAdapter } from './adapters/index.mjs'
 import { buildFrontendChain } from './frontend-graph.mjs'
 import { browserStatus, defaultUserDataDir, ensureBrowser, findChrome, listPages, openTarget } from './browser.mjs'
 import { scanFrontends } from './scan.mjs'
-import { explainNodes } from './explain.mjs'
+import { explainNodes, pingLLM } from './explain.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -43,6 +43,7 @@ const CONFIG = {
     apiKey: process.env.APIFLOW_LLM_KEY || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY || '',
     baseUrl: process.env.APIFLOW_LLM_BASE || 'https://api.deepseek.com',
     model: process.env.APIFLOW_LLM_MODEL || 'deepseek-chat',
+    fromEnv: !!(process.env.APIFLOW_LLM_KEY || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY),
   },
   frontendRoot: arg('frontend', process.env.APIFLOW_FRONTEND || '<local-path>'),
   chromePath: arg('chrome', process.env.APIFLOW_CHROME || ''),
@@ -61,7 +62,7 @@ async function loadSavedConfig() {
     if (typeof j.userDataDir === 'string' && j.userDataDir && !argGiven('user-data')) CONFIG.userDataDir = j.userDataDir
     if (typeof j.lastUrl === 'string') CONFIG.lastUrl = j.lastUrl
     if (j.explain && typeof j.explain === 'object') {
-      if (typeof j.explain.apiKey === 'string' && j.explain.apiKey) CONFIG.explain.apiKey = j.explain.apiKey
+      if (typeof j.explain.apiKey === 'string' && j.explain.apiKey) { CONFIG.explain.apiKey = j.explain.apiKey; CONFIG.explain.fromEnv = false }
       if (typeof j.explain.baseUrl === 'string' && j.explain.baseUrl) CONFIG.explain.baseUrl = j.explain.baseUrl
       if (typeof j.explain.model === 'string' && j.explain.model) CONFIG.explain.model = j.explain.model
     }
@@ -70,7 +71,27 @@ async function loadSavedConfig() {
 
 async function saveSavedConfig() {
   const data = { cdpPort: CONFIG.cdpPort, chromePath: CONFIG.chromePath, userDataDir: CONFIG.userDataDir, lastUrl: CONFIG.lastUrl }
+  if (!CONFIG.explain.fromEnv && CONFIG.explain.apiKey) {
+    data.explain = { apiKey: CONFIG.explain.apiKey, baseUrl: CONFIG.explain.baseUrl, model: CONFIG.explain.model }
+  }
   await writeFile(CONFIG_FILE, JSON.stringify(data, null, 2) + '\n', 'utf8').catch(() => {})
+}
+
+function maskKey(k) {
+  const s = String(k || '')
+  if (!s) return ''
+  if (s.length <= 10) return s.slice(0, 2) + '***'
+  return s.slice(0, 5) + '***' + s.slice(-4)
+}
+
+function explainConfigOut() {
+  return {
+    ready: !!CONFIG.explain.apiKey,
+    baseUrl: CONFIG.explain.baseUrl,
+    model: CONFIG.explain.model,
+    keyMask: maskKey(CONFIG.explain.apiKey),
+    fromEnv: !!CONFIG.explain.fromEnv,
+  }
 }
 
 async function readJsonBody(req) {
@@ -1050,6 +1071,34 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
       res.end(JSON.stringify(snapshot()))
       return
+    }
+    if (url.pathname === '/api/config' && req.method === 'GET') {
+      return sendJson(res, 200, { explain: explainConfigOut() })
+    }
+    if (url.pathname === '/api/config/explain' && req.method === 'POST') {
+      const body = await readJsonBody(req)
+      if (body.clear) {
+        CONFIG.explain.apiKey = ''
+        CONFIG.explain.fromEnv = false
+      } else if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
+        CONFIG.explain.apiKey = body.apiKey.trim()
+        CONFIG.explain.fromEnv = false
+      }
+      if (typeof body.baseUrl === 'string' && body.baseUrl.trim()) CONFIG.explain.baseUrl = body.baseUrl.trim()
+      if (typeof body.model === 'string' && body.model.trim()) CONFIG.explain.model = body.model.trim()
+      await saveSavedConfig()
+      console.log('[apiflow] explain 配置已更新:', explainConfigOut().ready ? 'ready ' + explainConfigOut().keyMask : 'cleared')
+      return sendJson(res, 200, { ok: true, explain: explainConfigOut() })
+    }
+    if (url.pathname === '/api/explain/test' && req.method === 'POST') {
+      if (!CONFIG.explain.apiKey) return sendJson(res, 200, { ok: false, error: '还没配置 key' })
+      const t0 = Date.now()
+      try {
+        const sample = await pingLLM(CONFIG.explain)
+        return sendJson(res, 200, { ok: true, ms: Date.now() - t0, model: CONFIG.explain.model, sample: String(sample).slice(0, 60) })
+      } catch (e) {
+        return sendJson(res, 200, { ok: false, ms: Date.now() - t0, model: CONFIG.explain.model, error: String((e && e.message) || e) })
+      }
     }
     if (url.pathname === '/api/explain' && req.method === 'POST') {
       const body = await readJsonBody(req)

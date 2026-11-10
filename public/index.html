@@ -22,6 +22,7 @@
     <button id="btn-trees" title="接口层失败时是否显示后端方法树（默认隐藏）">显示方法树</button>
     <button id="btn-motion" title="请求发生时在连线上播放一次流向高光">动效 开</button>
     <button id="btn-params" title="显示 / 隐藏本次请求的参数条">参数 开</button>
+    <button id="btn-cfg" title="配置方法解释用的模型 key / 端点 / 模型">设置</button>
     <button id="btn-zoom" title="Ctrl + 滚轮缩放，双击空白复位">100%</button>
     <button id="btn-connect">重连浏览器</button>
     <button id="btn-reload">重载索引</button>
@@ -52,6 +53,34 @@
     <button id="btn-detail-open" title="展开详情面板">节点详情 ◀</button>
   </aside>
 </main>
+
+
+<div id="cfgmodal" hidden>
+  <div class="cfgbox">
+    <div class="cfgh">
+      <b>方法解释 · 模型设置</b>
+      <button id="cfg-close" title="关闭">×</button>
+    </div>
+    <div class="cfgb">
+      <label>API Key
+        <input id="cfg-key" type="password" autocomplete="off" placeholder="sk-…（留空表示不修改；已保存的 key 不回显）" />
+      </label>
+      <label>Base URL
+        <input id="cfg-base" type="text" autocomplete="off" placeholder="https://api.deepseek.com" />
+      </label>
+      <label>Model
+        <input id="cfg-model" type="text" autocomplete="off" placeholder="deepseek-chat" />
+      </label>
+      <div class="cfgtip" id="cfg-tip">key 会写进后端本机的 apiflow.config.json（已在 .gitignore 里），接口只回传掩码。</div>
+      <div class="cfgrow">
+        <button id="cfg-save" class="primary">保存</button>
+        <button id="cfg-test">测试连接</button>
+        <button id="cfg-clear">清除 key</button>
+      </div>
+      <div class="cfgstatus" id="cfg-status"></div>
+    </div>
+  </div>
+</div>
 
 <script src="/app.js"></script>
 </body>
