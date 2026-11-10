@@ -10,3 +10,6 @@ Thumbs.db
 
 # javac 对照产物
 tools/out/
+
+# 效果截图（含本机业务数据，不入库）
+docs/

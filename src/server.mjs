@@ -34,7 +34,7 @@ function argGiven(name) {
 const CONFIG = {
   port: Number(arg('port', process.env.APIFLOW_PORT || 7788)),
   cdpPort: Number(arg('cdp', process.env.APIFLOW_CDP_PORT || 9222)),
-  backendRoot: arg('backend', process.env.APIFLOW_BACKEND || '<local-path>'),
+  backendRoot: arg('backend', process.env.APIFLOW_BACKEND || ''),
   targetPattern: arg('target', process.env.APIFLOW_TARGET || ''),
   chainDepth: Number(arg('depth', process.env.APIFLOW_DEPTH || 4)),
   lang: arg('lang', process.env.APIFLOW_LANG || 'auto'),
@@ -45,7 +45,7 @@ const CONFIG = {
     model: process.env.APIFLOW_LLM_MODEL || 'deepseek-chat',
     fromEnv: !!(process.env.APIFLOW_LLM_KEY || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY),
   },
-  frontendRoot: arg('frontend', process.env.APIFLOW_FRONTEND || '<local-path>'),
+  frontendRoot: arg('frontend', process.env.APIFLOW_FRONTEND || ''),
   chromePath: arg('chrome', process.env.APIFLOW_CHROME || ''),
   userDataDir: arg('user-data', process.env.APIFLOW_USER_DATA || defaultUserDataDir()),
   lastUrl: '',
@@ -61,6 +61,8 @@ async function loadSavedConfig() {
     if (typeof j.chromePath === 'string' && !argGiven('chrome')) CONFIG.chromePath = j.chromePath
     if (typeof j.userDataDir === 'string' && j.userDataDir && !argGiven('user-data')) CONFIG.userDataDir = j.userDataDir
     if (typeof j.lastUrl === 'string') CONFIG.lastUrl = j.lastUrl
+    if (typeof j.backendRoot === 'string' && j.backendRoot && !argGiven('backend')) CONFIG.backendRoot = j.backendRoot
+    if (typeof j.frontendRoot === 'string' && j.frontendRoot && !argGiven('frontend')) CONFIG.frontendRoot = j.frontendRoot
     if (j.explain && typeof j.explain === 'object') {
       if (typeof j.explain.apiKey === 'string' && j.explain.apiKey) { CONFIG.explain.apiKey = j.explain.apiKey; CONFIG.explain.fromEnv = false }
       if (typeof j.explain.baseUrl === 'string' && j.explain.baseUrl) CONFIG.explain.baseUrl = j.explain.baseUrl
@@ -71,6 +73,8 @@ async function loadSavedConfig() {
 
 async function saveSavedConfig() {
   const data = { cdpPort: CONFIG.cdpPort, chromePath: CONFIG.chromePath, userDataDir: CONFIG.userDataDir, lastUrl: CONFIG.lastUrl }
+  if (CONFIG.backendRoot) data.backendRoot = CONFIG.backendRoot
+  if (CONFIG.frontendRoot) data.frontendRoot = CONFIG.frontendRoot
   if (!CONFIG.explain.fromEnv && CONFIG.explain.apiKey) {
     data.explain = { apiKey: CONFIG.explain.apiKey, baseUrl: CONFIG.explain.baseUrl, model: CONFIG.explain.model }
   }
@@ -125,6 +129,12 @@ const PROBE_VERSION = 2
 const treeCache = new Map() // 'METHOD path' -> 调用树
 
 async function loadBackend() {
+  if (!CONFIG.backendRoot) {
+    index = null
+    state.backend.summary = null
+    state.backend.error = '未指定后端源码目录：加 --backend <源码目录> 或设置 APIFLOW_BACKEND（也可写进 apiflow.config.json）'
+    return
+  }
   try {
     adapter = pickAdapter(CONFIG.backendRoot, CONFIG.lang)
     index = await adapter.index(CONFIG.backendRoot, { python: CONFIG.python })

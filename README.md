@@ -5,7 +5,7 @@
 
 后端部分以「源码卡片」呈现：每个方法展示完整代码，**方法里哪一行调用了别的方法，就从那一行拉一条线**接到被调方法的完整源码卡片；异常链路整条变红，并标出**最早失败的根因**。用于人工快速审阅、定位 bug。
 
-当前版本：v0.25（扫描器支持 IPv6 回环、无 Chrome 时自动拉起调试浏览器；调用图 + 源码卡片 + 重复请求折叠 + 自由拖动 + 缩放 + 多接口分组与折叠 + 响应体 JSON 树 + MyBatis XML 映射 + 异常根因标记 + 接口层失败隐藏方法链 + 前端调用链 + 流向高光 + **多语言适配器**：`graph-core` 语言无关图逻辑 + `adapters/java`、`adapters/python`，`--lang auto|java|python` 自动识别；Python 走 stdlib `ast` 静态解析（含原生 SQL 字面量卡片），Python 见 `docs/screenshot-python.png`、`docs/screenshot-python-sql.png`；**方法解释**：卡片 `?` 悬停一句话、右侧详情给「作用/流转/业务/风险」，规则打底、可接模型、按方法落盘缓存）。
+当前版本：v0.25（扫描器支持 IPv6 回环、无 Chrome 时自动拉起调试浏览器；调用图 + 源码卡片 + 重复请求折叠 + 自由拖动 + 缩放 + 多接口分组与折叠 + 响应体 JSON 树 + MyBatis XML 映射 + 异常根因标记 + 接口层失败隐藏方法链 + 前端调用链 + 流向高光 + **多语言适配器**：`graph-core` 语言无关图逻辑 + `adapters/java`、`adapters/python`，`--lang auto|java|python` 自动识别；Python 走 stdlib `ast` 静态解析（含原生 SQL 字面量卡片），**方法解释**：卡片 `?` 悬停一句话、右侧详情给「作用/流转/业务/风险」，规则打底、可接模型、按方法落盘缓存）。
 
 ## 它是怎么拿到数据的
 
@@ -26,7 +26,7 @@
 
 前置：Node 22+、本机已有 Chrome/Edge、一个能打开的前端服务。
 
-**1) 启动 apiflow**：双击本目录的 `start.cmd`（等价于 `cd /d <local-path> && node src/server.mjs`）。
+**1) 启动 apiflow**：双击本目录的 `start.cmd`（等价于 `cd /d <apiflow 目录> && node src/server.mjs`）。
 
 **2) 打开工具页**：`http://127.0.0.1:7788`。
 
@@ -39,10 +39,10 @@
 
 ```bat
 :: 自动识别语言（按 pom.xml / build.gradle 或 pyproject.toml / manage.py 探测）
-node src/server.mjs --backend <local-path>
+node src/server.mjs --backend <python-backend>
 
 :: 显式指定语言 + 指定 python 解释器
-node src/server.mjs --lang python --python python --backend <local-path>
+node src/server.mjs --lang python --python python --backend <python-backend>
 
 :: 换端口跑第二份（对比两个项目）
 node src/server.mjs --port 7789 --cdp 9223 --lang python --backend <python-root>
@@ -50,7 +50,7 @@ node src/server.mjs --port 7789 --cdp 9223 --lang python --backend <python-root>
 
 
 ```bat
-node src/server.mjs --backend <local-path> --depth 4
+node src/server.mjs --backend <java-backend> --depth 4
 ```
 
 `--port 7788`、`--cdp 9222`（浏览器调试端口）、`--backend <java源码目录>`、`--depth <方法展开层数，默认 4>`、`--chrome <chrome.exe 路径>`、`--user-data <浏览器数据目录，默认 %TEMP%/apiflow-chrome>`。
@@ -103,13 +103,12 @@ apiflow/
 ├─ src/server.mjs      HTTP 服务 + 轨迹聚合
 ├─ public/             前端页面（原生 JS，无构建）
 ├─ start.cmd           Windows 启动器（cd /d 到本目录再起服务）
-└─ docs/               效果截图
 ```
 
 ## 现在能做什么 / 还不能做什么
 
 能做：
-- 80 条 Spring 路由、17 个 Controller、419 个方法的静态索引（example-spring，含 interface）。
+- 80 条 Spring 路由、17 个 Controller、419 个方法的静态索引（含 interface）。
 - 点击 → HTTP → Controller → 方法内调用 的完整代码图，调用线从具体代码行拉出。
 - 每个方法完整源码、调用点行号、异常红色高亮；interface 方法（如 MyBatis Mapper）作为叶子节点展示签名。
 - MyBatis Mapper 方法会自动换成 XML 里的 SQL 语句块：卡片带 `XML` 徽标，`<include refid>` 递归展开，详情面板显示语句类型（`<select>` 等）与语句 id。
@@ -218,4 +217,4 @@ set APIFLOW_LLM_MODEL=deepseek-chat               # 可选
 **方法体没改就直接读缓存**（模型/规则都算命中）；方法体改了 hash 变 → 只重算那一个方法。
 规则结果也会落盘（没 key 也能二次打开秒出）；之后配了 key，命中「规则」缓存会自动升级成模型解释。
 
-界面：`docs/screenshot-explain.png`；设置弹窗：`docs/screenshot-settings.png`、`docs/screenshot-settings-saved.png`。
+界面：顶栏「设置」打开配置弹窗；方法卡片上的 `?` 与右侧「解释」块。

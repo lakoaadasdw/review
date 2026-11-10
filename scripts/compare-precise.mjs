@@ -7,7 +7,8 @@ import { dirname, join } from 'node:path'
 import { indexJavaProject } from '../src/java-routes.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const root = process.argv[2] || '<local-path>'
+const root = process.argv[2]
+if (!root) { console.error('用法: node scripts/compare-precise.mjs <后端源码目录>'); process.exit(2) }
 const tmp = join(process.env.TEMP || '/tmp', `javac-dump-${Date.now()}.json`)
 const cp = join(here, '..', 'tools', 'out')
 
