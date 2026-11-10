@@ -4,8 +4,9 @@
  * 通过 CDP binding __apiflowSend 把事件回传宿主。
  */
 (() => {
-  if (window.__apiflow) return
-  window.__apiflow = { version: 1, startedAt: Date.now() }
+  const PROBE_VERSION = 2
+  if (window.__apiflow && window.__apiflow.version >= PROBE_VERSION) return
+  window.__apiflow = { version: PROBE_VERSION, startedAt: Date.now() }
 
   const send = (payload) => {
     try { window.__apiflowSend && window.__apiflowSend(JSON.stringify(payload)) } catch {}
@@ -40,10 +41,16 @@
   }
 
   let currentTrace = null
+  // 只有「点击后的一小段时间内」发生的请求才归到这条点击链路；
+  // 之后的请求（定时轮询、页面定时刷新）开新链路，由宿主聚合到「轮询」页。
+  let activeUntil = 0
+  const REQUEST_WINDOW = 2500
   const traceOf = (reason) => {
-    if (!currentTrace) {
+    const now = Date.now()
+    if (!currentTrace || now > activeUntil) {
       currentTrace = uid()
-      send({ kind: 'trace-start', trace: currentTrace, reason: reason || 'auto', at: Date.now() })
+      activeUntil = now + REQUEST_WINDOW
+      send({ kind: 'trace-start', trace: currentTrace, reason: reason && reason !== 'error' ? 'poll' : 'auto', at: now })
     }
     return currentTrace
   }
@@ -61,6 +68,7 @@
   document.addEventListener('click', (e) => {
     const trace = uid()
     currentTrace = trace
+    activeUntil = Date.now() + REQUEST_WINDOW
     try {
       document.querySelectorAll('[data-apiflow-target]').forEach((el) => el.removeAttribute('data-apiflow-target'))
       if (e.target && e.target.nodeType === 1) e.target.setAttribute('data-apiflow-target', '1')
@@ -75,6 +83,7 @@
     if (typeof fn === 'function' && /^(click|pointerdown|submit)$/.test(type)) {
       const wrapped = function (...args) {
         const trace = traceOf(type)
+        activeUntil = Math.max(activeUntil, Date.now() + 2000)
         let stack = ''
         try { stack = String(new Error().stack || '').split('\n').slice(1, 7).join('\n') } catch {}
         send({ kind: 'handler', trace, event: type, target: describe(args[0]?.currentTarget || this), stack, at: Date.now() })

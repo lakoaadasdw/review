@@ -121,6 +121,7 @@ let adapter = null
 let cdp = null
 let currentTargetId = null
 const scripts = new Map() // scriptId -> url
+const PROBE_VERSION = 2
 const treeCache = new Map() // 'METHOD path' -> 调用树
 
 async function loadBackend() {
@@ -1054,16 +1055,24 @@ async function connectCDP(pattern) {
     })
 
     const probe = await readFile(join(here, 'probe.js'), 'utf8')
-    // runImmediately 会直接注入到当前页面，已有探针的页面不再强制刷新（避免打断用户正在看的页面）
-    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: probe, runImmediately: true })
+    let probeVersion = 0
+    try {
+      const r = await cdp.send('Runtime.evaluate', { expression: 'window.__apiflow ? window.__apiflow.version || 1 : 0', returnByValue: true })
+      probeVersion = (r && r.result && Number(r.result.value)) || 0
+    } catch {}
+    const stale = probeVersion > 0 && probeVersion < PROBE_VERSION
+    const missing = probeVersion === 0
+    // 只在「没有探针」或「探针版本落后」时才动页面；版本落后必须刷新，旧的包装器没法原地替换
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: probe, runImmediately: !stale })
+    if (stale || missing) {
+      try { await cdp.send('Page.reload', { ignoreCache: false }) } catch {}
+      await new Promise((r) => setTimeout(r, 500))
+    }
     let hasProbe = false
     try {
       const r = await cdp.send('Runtime.evaluate', { expression: '!!window.__apiflow', returnByValue: true })
       hasProbe = !!(r && r.result && r.result.value)
     } catch {}
-    if (!hasProbe) {
-      try { await cdp.send('Page.reload', { ignoreCache: false }) } catch {}
-    }
     console.log(`[cdp] attached ${target.url}${hasProbe ? ' (probe already present)' : ''}`)
   } catch (err) {
     state.cdp = { connected: false, port: CONFIG.cdpPort, target: null, error: String(err?.message || err) }

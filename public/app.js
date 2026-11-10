@@ -30,7 +30,7 @@ function methodColorRef(key) {
   return { idx, color: METHOD_COLORS[idx] }
 }
 
-const view = { data: null, traceId: null, selected: null, expanded: new Map(), collapsed: new Map(), timer: null, dragPos: new Map(), motion: localStorage.getItem('apiflow.motion') !== '0', paramsOn: localStorage.getItem('apiflow.params') !== '0', showClicks: localStorage.getItem('apiflow.showClicks') === '1', sideTab: localStorage.getItem('apiflow.sideTab') || 'chains', _newestTraceId: null, _pbar: '', seenAt: {}, seenCount: {}, _sig: '', explain: { traceId: '', loading: false, items: {}, source: '', error: '' } }
+const view = { data: null, traceId: null, selected: null, expanded: new Map(), collapsed: new Map(), timer: null, dragPos: new Map(), motion: localStorage.getItem('apiflow.motion') !== '0', paramsOn: localStorage.getItem('apiflow.params') !== '0', showClicks: localStorage.getItem('apiflow.showClicks') === '1', sideTab: localStorage.getItem('apiflow.sideTab') || 'chains', hidePollReq: localStorage.getItem('apiflow.hidePollReq') !== '0', _newestTraceId: null, _pbar: '', seenAt: {}, seenCount: {}, _sig: '', explain: { traceId: '', loading: false, items: {}, source: '', error: '' } }
 
 const $ = (id) => document.getElementById(id)
 
@@ -592,6 +592,59 @@ function layoutMethods(trace, expanded, collapsed, topY = GRAPH_TOP, hidden = ne
 }
 
 /** 把同类重复请求折叠成一个节点（15s 轮询/并发），详情里仍列出每一次 */
+function pathOfUrl(u) {
+  try { return new URL(String(u || ''), 'http://placeholder').pathname } catch { return String(u || '') }
+}
+
+/** 把「定时任务发起的请求」从用户链路画布里摘掉：靠前端调用链的根函数名识别（poll / tick / heartbeat …），
+ *  比按接口名匹配更准 —— 同样的接口如果是用户点击触发的，照常显示。 */
+function dropPollFlow(flow) {
+  const POLL_FN = /^(poll|polling|tick|ticker|heartbeat|refresh|autoRefresh|watch(er)?)$/i
+  const byId = new Map(flow.nodes.map((n) => [n.id, n]))
+  const parentsOf = new Map()
+  for (const e of flow.edges) {
+    if (!parentsOf.has(e.to)) parentsOf.set(e.to, [])
+    parentsOf.get(e.to).push(e.from)
+  }
+  const feAncestors = (id, guard = 0, out = []) => {
+    if (guard > 8) return out
+    for (const p of parentsOf.get(id) || []) {
+      const n = byId.get(p)
+      if (!n) continue
+      if (n.kind === 'fe') out.push(n)
+      feAncestors(p, guard + 1, out)
+    }
+    return out
+  }
+  const drop = new Set()
+  for (const n of flow.nodes) {
+    if (n.kind !== 'request') continue
+    const chain = feAncestors(n.id)
+    const isPoll = chain.some((f) => POLL_FN.test(String((f.meta || {}).func || '')))
+    if (isPoll) drop.add(n.id)
+  }
+  if (!drop.size) return flow
+  for (const e of flow.edges) if (drop.has(e.from) && !drop.has(e.to)) drop.add(e.to)
+  // 前端代码节点：出边全部断开后连带摘掉（链式，要迭代到不动为止）
+  for (let changed = true; changed; ) {
+    changed = false
+    for (const n of flow.nodes) {
+      if (n.kind !== 'fe' || drop.has(n.id)) continue
+      const outs = flow.edges.filter((e) => e.from === n.id)
+      if (!outs.length) continue
+      const live = outs.filter((e) => !drop.has(e.to))
+      if (!live.length) { drop.add(n.id); changed = true }
+    }
+  }
+  return {
+    ...flow,
+    nodes: flow.nodes.filter((n) => !drop.has(n.id)),
+    edges: flow.edges.filter((e) => !drop.has(e.from) && !drop.has(e.to)),
+    droppedPoll: drop.size,
+    droppedIds: drop,
+  }
+}
+
 function aggregateFlow(trace) {
   const keyOf = (n) => `${n.kind} ${(n.meta || {}).method || ''} ${(n.meta || {}).url || ''}`
   const groups = new Map()
@@ -799,7 +852,8 @@ function renderGraph() {
   if (sig === view._sig) return
   view._sig = sig
 
-  const flow = aggregateFlow(trace)
+  const rawFlow = aggregateFlow(trace)
+  const flow = view.hidePollReq ? dropPollFlow(rawFlow) : rawFlow
   // 哪些节点是「刚到的」：用于给对应的边叠一次流动高光（只在请求出现的那一刻动）
   // 新 trace 第一次渲染：把最近 3 秒内产生的节点都当作“刚到”（否则新链一出现就全程静止，前端那段永远不会亮）
   const prevAt = view.seenAt[trace.id] ?? (Date.now() - 3000)
@@ -836,6 +890,12 @@ function renderGraph() {
   const hideTrees = ifaceFailed && !view.forceTrees
   // 只隐藏“最近一次响应是失败”的接口；已经复通的接口照常展示方法链
   const hiddenBi = new Set()
+  // 被「隐藏轮询请求」摘掉的接口，其方法树也一起收起（否则画布上会留一行空洞的分组标题）
+  if (flow.droppedIds) {
+    backendsOf(trace).forEach((b, bi) => {
+      if (flow.droppedIds.has(flow.mapId(b.from))) hiddenBi.add(bi)
+    })
+  }
   if (hideTrees) {
     const statusById = new Map(flow.nodes.map((n) => [n.id, n.status]))
     backendsOf(trace).forEach((b, bi) => {
@@ -1615,6 +1675,21 @@ if ($('btn-params')) {
   }
 }
 
+if ($('btn-pollhide')) {
+  const syncPollHide = () => {
+    $('btn-pollhide').textContent = view.hidePollReq ? '隐藏轮询请求' : '显示轮询请求'
+    $('btn-pollhide').classList.toggle('off', !view.hidePollReq)
+  }
+  syncPollHide()
+  $('btn-pollhide').onclick = () => {
+    view.hidePollReq = !view.hidePollReq
+    localStorage.setItem('apiflow.hidePollReq', view.hidePollReq ? '1' : '0')
+    syncPollHide()
+    view._sig = ''
+    renderGraph()
+  }
+}
+
 $('btn-trees').onclick = () => {
   view.forceTrees = !view.forceTrees
   $('btn-trees').textContent = view.forceTrees ? '隐藏方法树' : '显示方法树'
@@ -1774,3 +1849,4 @@ if ($('btn-cfg')) {
     }
   }
 }
+
