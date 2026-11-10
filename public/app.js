@@ -30,7 +30,7 @@ function methodColorRef(key) {
   return { idx, color: METHOD_COLORS[idx] }
 }
 
-const view = { data: null, traceId: null, selected: null, expanded: new Map(), collapsed: new Map(), timer: null, dragPos: new Map(), motion: localStorage.getItem('apiflow.motion') !== '0', paramsOn: localStorage.getItem('apiflow.params') !== '0', showClicks: localStorage.getItem('apiflow.showClicks') === '1', showBg: localStorage.getItem('apiflow.showBg') === '1', _newestTraceId: null, _pbar: '', seenAt: {}, seenCount: {}, _sig: '', explain: { traceId: '', loading: false, items: {}, source: '', error: '' } }
+const view = { data: null, traceId: null, selected: null, expanded: new Map(), collapsed: new Map(), timer: null, dragPos: new Map(), motion: localStorage.getItem('apiflow.motion') !== '0', paramsOn: localStorage.getItem('apiflow.params') !== '0', showClicks: localStorage.getItem('apiflow.showClicks') === '1', sideTab: localStorage.getItem('apiflow.sideTab') || 'chains', _newestTraceId: null, _pbar: '', seenAt: {}, seenCount: {}, _sig: '', explain: { traceId: '', loading: false, items: {}, source: '', error: '' } }
 
 const $ = (id) => document.getElementById(id)
 
@@ -323,19 +323,24 @@ function userTraces() {
   return allTraces().filter((t) => isUserTrace(t) && matchMode(t))
 }
 
-function bgTraces() {
-  return allTraces().filter((t) => !isUserTrace(t) && matchMode(t))
+function visibleTraces() {
+  return userTraces()
 }
 
-function visibleTraces() {
-  return view.showBg ? userTraces().concat(bgTraces()) : userTraces()
+function pollRows() {
+  return (view.data && view.data.polls) || []
 }
 
 function activeTrace() {
+  const all = allTraces()
+  if (view.traceId) {
+    const hit = all.find((t) => t.id === view.traceId)
+    if (hit) return hit
+  }
   const traces = visibleTraces()
   if (!traces.length) return null
-  if (!view.traceId || !traces.some((t) => t.id === view.traceId)) view.traceId = traces[0].id
-  return traces.find((t) => t.id === view.traceId) || null
+  view.traceId = traces[0].id
+  return traces[0]
 }
 
 function expansionSet(trace) {
@@ -351,47 +356,82 @@ function renderTraces() {
   const el = $('traces')
   const all = allTraces()
   const traces = userTraces()
-  const bg = bgTraces()
-  const hiddenClicks = all.length - traces.length - bg.length
-  if (!all.length) {
-    el.innerHTML = '<div class="hint">点击页面上的按钮，这里会出现一条链路</div>'
-    return
-  }
+  const hiddenClicks = all.filter((t) => t.kind !== 'poll').length - traces.length
   const active = activeTrace()
-  const card = (t, extraClass = '') => {
+  const card = (t) => {
     const req = t.nodes.find((n) => n.kind === 'request')
     const time = new Date(t.startedAt).toLocaleTimeString('zh-CN', { hour12: false })
-    return `<div class="trace ${extraClass} ${active && t.id === active.id ? 'active' : ''} ${t.status === 'error' ? 'err' : ''}" data-id="${escapeHtml(t.id)}">
+    return `<div class="trace ${active && t.id === active.id ? 'active' : ''} ${t.status === 'error' ? 'err' : ''}" data-id="${escapeHtml(t.id)}">
       <div class="t-head"><span>${time}</span><span>${t.nodes.length} 节点${t.backends && t.backends.length ? ` · ${t.backends.length} 接口 · ${t.backends[0].nodes.length} 方法` : ''}${t.status === 'error' ? ' · 异常' : ''}</span></div>
       <div class="t-url">${escapeHtml(req ? `${req.meta.method} ${shortUrl(req.meta.url)}` : t.reason || '—')}</div>
     </div>`
   }
-  let html = ''
-  if (!traces.length) html += '<div class="hint">还没有用户操作触发的链路（点下面「显示纯点击」或「后台请求」看看）</div>'
-  else html += traces.map((t) => card(t)).join('')
-  if (bg.length && view.showBg) html += bg.map((t) => card(t, 'bg')).join('')
-  el.innerHTML = html
-  el.querySelectorAll('.trace').forEach((node) => {
-    node.onclick = () => { view.traceId = node.dataset.id; view.selected = null; view._follow = false; renderTraces(); renderGraph() }
-  })
-  if (bg.length) {
-    const bar = document.createElement('button')
-    bar.id = 'btn-bg'
-    bar.className = 'trace-toggle'
-    bar.textContent = view.showBg ? `隐藏后台请求（${bg.length}）` : `后台请求（${bg.length}）`
-    bar.onclick = () => {
-      view.showBg = !view.showBg
-      try { localStorage.setItem('apiflow.showBg', view.showBg ? '1' : '0') } catch {}
-      if (!view.showBg && view.traceId && !userTraces().some((t) => t.id === view.traceId)) {
-        view.traceId = null
-        view.selected = null
-      }
-      renderTraces()
-      renderGraph()
-    }
-    el.appendChild(bar)
+  if (!traces.length) {
+    el.innerHTML = '<div class="hint">还没有用户操作触发的链路（点下面「显示纯点击」看看）</div>'
+  } else {
+    el.innerHTML = traces.map(card).join('')
+    el.querySelectorAll('.trace').forEach((node) => {
+      node.onclick = () => { view.traceId = node.dataset.id; view.selected = null; view._follow = false; renderTraces(); renderGraph() }
+    })
   }
   renderClickToggle(el, hiddenClicks)
+  renderPolls()
+}
+
+function renderPolls() {
+  const el = $('polls')
+  const rows = pollRows()
+  const badge = $('poll-count')
+  if (badge) badge.textContent = String(rows.length)
+  const total = rows.reduce((n, r) => n + (r.count || 0), 0)
+  if (!rows.length) {
+    el.innerHTML = '<div class="hint">还没有后台请求（页面定时轮询、首屏加载会记在这里）</div>'
+    return
+  }
+  const activeId = view.traceId
+  el.innerHTML = `<div class="poll-sum">共 ${rows.length} 个接口 · 累计 ${total} 次</div>` + rows.map((r) => {
+    const bad = (r.lastStatus || 0) >= 400 || (r.errCount || 0) > 0
+    const time = r.lastAt ? new Date(r.lastAt).toLocaleTimeString('zh-CN', { hour12: false }) : ''
+    return `<div class="poll ${bad ? 'err' : ''} ${r.traceId && r.traceId === activeId ? 'active' : ''}" data-trace="${escapeHtml(r.traceId || '')}">
+      <div class="p-head"><span class="p-method">${escapeHtml(r.method)}</span><span class="p-count">×${r.count}</span><span class="p-status">${r.lastStatus || '—'}</span></div>
+      <div class="p-path" title="${escapeHtml(r.path)}">${escapeHtml(r.path)}</div>
+      <div class="p-meta">${r.avgMs}ms 均值 · 最近 ${time}${r.errCount ? ` · 失败 ${r.errCount}` : ''}</div>
+    </div>`
+  }).join('')
+  el.querySelectorAll('.poll').forEach((node) => {
+    node.onclick = () => {
+      const id = node.dataset.trace
+      if (!id) return
+      view.traceId = id
+      view.selected = null
+      view._follow = false
+      renderPolls()
+      renderGraph()
+    }
+  })
+}
+
+function switchTab(tab) {
+  view.sideTab = tab
+  try { localStorage.setItem('apiflow.sideTab', tab) } catch {}
+  const chains = $('traces')
+  const polls = $('polls')
+  const tb = $('tab-chains')
+  const tp = $('tab-polls')
+  if (chains) chains.hidden = tab !== 'chains'
+  if (polls) polls.hidden = tab !== 'polls'
+  if (tb) tb.className = tab === 'chains' ? 'on' : ''
+  if (tp) tp.className = tab === 'polls' ? 'on' : ''
+  if (tab === 'polls') {
+    renderPolls()
+    const first = pollRows()[0]
+    if (first && first.traceId) {
+      view.traceId = first.traceId
+      view.selected = null
+      view._sig = ''
+      renderGraph()
+    }
+  } else renderTraces()
 }
 
 function renderClickToggle(el, hiddenClicks) {
@@ -1603,6 +1643,10 @@ $('btn-zoom').onclick = () => {
 $('btn-connect').onclick = async () => { $('pill-cdp').textContent = '连接中…'; await api('/api/connect', 'POST'); tick() }
 $('btn-reload').onclick = async () => { await api('/api/reload', 'POST'); view.expanded.clear(); tick() }
 $('btn-reset').onclick = async () => { await api('/api/reset', 'POST'); view.traceId = null; view.selected = null; view.expanded.clear(); view.collapsed.clear(); view.dragPos.clear(); tick() }
+
+switchTab(localStorage.getItem('apiflow.sideTab') === 'polls' ? 'polls' : 'chains')
+$('tab-chains').onclick = () => switchTab('chains')
+$('tab-polls').onclick = () => switchTab('polls')
 
 $('btn-scan').onclick = () => refreshTargets()
 $('btn-launch').onclick = async () => {

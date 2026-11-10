@@ -31,8 +31,15 @@
 </header>
 
 <main>
-  <aside id="traces">
-    <div class="hint">点击页面上的按钮，这里会出现一条链路</div>
+  <aside id="sidebar">
+    <div class="sidetabs">
+      <button id="tab-chains" class="on">调用链</button>
+      <button id="tab-polls">轮询 <b id="poll-count">0</b></button>
+    </div>
+    <div id="traces">
+      <div class="hint">点击页面上的按钮，这里会出现一条链路</div>
+    </div>
+    <div id="polls" hidden></div>
   </aside>
 
   <section id="canvas">

@@ -112,6 +112,7 @@ const state = {
   adapters: listAdapters(),
   traces: new Map(),
   order: [],
+  polls: new Map(),
   seq: 0,
 }
 
@@ -418,6 +419,49 @@ function ingest(payload) {
       break
     }
   }
+  indexPollTrace(trace)
+}
+
+/**
+ * 轮询聚合：没有点击来源的请求（首屏加载、定时轮询）不占用左侧调用链列表，
+ * 按「方法 + 路径」累加计数，只保留最新一条 trace 供点开查看详情。
+ */
+function pollKeyOf(trace) {
+  const req = trace.nodes.find((n) => n.kind === 'request')
+  if (!req || !req.meta) return null
+  let pathname = req.meta.url || ''
+  try { pathname = new URL(String(req.meta.url), 'http://placeholder').pathname } catch {}
+  return `${req.meta.method || 'GET'} ${pathname}`
+}
+
+function indexPollTrace(trace) {
+  if (trace.nodes.some((n) => n.kind === 'click')) return
+  const key = pollKeyOf(trace)
+  if (!key) return
+  const resp = [...trace.nodes].reverse().find((n) => n.kind === 'response')
+  const req = trace.nodes.find((n) => n.kind === 'request')
+  const prev = state.polls.get(key)
+  const duration = (resp && Number(resp.meta && resp.meta.duration)) || (req && Number(req.meta && req.meta.duration)) || 0
+  const status = (resp && resp.meta && resp.meta.status) || 0
+  const bad = trace.status === 'error' || status >= 400
+  const entry = prev || { key, method: req.meta.method, path: key.slice(key.indexOf(' ') + 1), count: 0, okCount: 0, errCount: 0, totalMs: 0, maxMs: 0 }
+  entry.count += 1
+  if (bad) entry.errCount += 1
+  else entry.okCount += 1
+  entry.totalMs += duration
+  entry.maxMs = Math.max(entry.maxMs, duration)
+  entry.lastStatus = status
+  entry.lastMs = duration
+  entry.lastAt = Date.now()
+  entry.lastUrl = req.meta.url
+  if (prev && prev.traceId && prev.traceId !== trace.id) {
+    state.traces.delete(prev.traceId)
+    const i = state.order.indexOf(prev.traceId)
+    if (i >= 0) state.order.splice(i, 1)
+  }
+  entry.traceId = trace.id
+  trace.kind = 'poll'
+  state.polls.set(key, entry)
 }
 
 /** 用 CDP 反查刚被点击元素上注册的事件 handler 源码位置（前端"方法"落点） */
@@ -1051,12 +1095,16 @@ async function serveStatic(res, pathname) {
 
 function snapshot() {
   const traces = state.order.map((id) => state.traces.get(id)).filter(Boolean).map((t) => ({
-    id: t.id, reason: t.reason, startedAt: t.startedAt, lastEventAt: t.lastEventAt, status: t.status,
+    id: t.id, reason: t.reason, kind: t.kind || 'user', startedAt: t.startedAt, lastEventAt: t.lastEventAt, status: t.status,
     nodes: t.nodes, edges: t.edges, methods: t.methods, backends: t.backends,
   }))
+  const polls = [...state.polls.values()]
+    .sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))
+    .map((p) => ({ key: p.key, method: p.method, path: p.path, count: p.count, okCount: p.okCount, errCount: p.errCount, avgMs: p.count ? Math.round(p.totalMs / p.count) : 0, maxMs: p.maxMs, lastStatus: p.lastStatus, lastMs: p.lastMs, lastAt: p.lastAt, lastUrl: p.lastUrl, traceId: p.traceId }))
   return {
     startedAt: state.startedAt,
     cdp: state.cdp,
+    polls,
     backend: state.backend,
     adapters: state.adapters,
     traces,
