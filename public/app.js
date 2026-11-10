@@ -30,7 +30,7 @@ function methodColorRef(key) {
   return { idx, color: METHOD_COLORS[idx] }
 }
 
-const view = { data: null, traceId: null, selected: null, expanded: new Map(), collapsed: new Map(), timer: null, dragPos: new Map(), motion: localStorage.getItem('apiflow.motion') !== '0', paramsOn: localStorage.getItem('apiflow.params') !== '0', showClicks: localStorage.getItem('apiflow.showClicks') === '1', _newestTraceId: null, _pbar: '', seenAt: {}, seenCount: {}, _sig: '', explain: { traceId: '', loading: false, items: {}, source: '', error: '' } }
+const view = { data: null, traceId: null, selected: null, expanded: new Map(), collapsed: new Map(), timer: null, dragPos: new Map(), motion: localStorage.getItem('apiflow.motion') !== '0', paramsOn: localStorage.getItem('apiflow.params') !== '0', showClicks: localStorage.getItem('apiflow.showClicks') === '1', showBg: localStorage.getItem('apiflow.showBg') === '1', _newestTraceId: null, _pbar: '', seenAt: {}, seenCount: {}, _sig: '', explain: { traceId: '', loading: false, items: {}, source: '', error: '' } }
 
 const $ = (id) => document.getElementById(id)
 
@@ -228,13 +228,13 @@ async function tick() {
     $('pill-cdp').className = 'pill bad'
     return
   }
-  // 新的「有请求」trace 一到就自动切过去：单点一次触发的请求也能第一时间看到
-  const newest = (view.data?.traces || [])[0]
-  if (newest && newest.id !== view._newestTraceId) {
+  // 只跟着「用户操作」产生的新链路走：定时轮询的后台请求不抢视图
+  const newestUser = userTraces().find((t) => hasPayload(t))
+  if (newestUser && newestUser.id !== view._newestTraceId) {
     const first = !view._newestTraceId
-    view._newestTraceId = newest.id
-    if (hasPayload(newest) && (first || view.traceId === null || view._follow)) {
-      view.traceId = newest.id
+    view._newestTraceId = newestUser.id
+    if (first || view.traceId === null || view._follow) {
+      view.traceId = newestUser.id
       view.selected = null
       view._follow = true
     }
@@ -306,9 +306,29 @@ function hasPayload(t) {
   return t.nodes.some((n) => n.kind === 'request' || n.kind === 'error')
 }
 
+// 用户点击触发的链路 vs 页面自己发起的后台请求（定时轮询、首屏加载等）
+function isUserTrace(t) {
+  return t.nodes.some((n) => n.kind === 'click')
+}
+
+function allTraces() {
+  return view.data?.traces || []
+}
+
+function matchMode(t) {
+  return view.showClicks ? true : hasPayload(t)
+}
+
+function userTraces() {
+  return allTraces().filter((t) => isUserTrace(t) && matchMode(t))
+}
+
+function bgTraces() {
+  return allTraces().filter((t) => !isUserTrace(t) && matchMode(t))
+}
+
 function visibleTraces() {
-  const all = view.data?.traces || []
-  return view.showClicks ? all : all.filter(hasPayload)
+  return view.showBg ? userTraces().concat(bgTraces()) : userTraces()
 }
 
 function activeTrace() {
@@ -329,30 +349,48 @@ function expansionSet(trace) {
 
 function renderTraces() {
   const el = $('traces')
-  const allTraces = view.data?.traces || []
-  const traces = visibleTraces()
-  const hiddenClicks = allTraces.length - traces.length
-  if (!allTraces.length) {
+  const all = allTraces()
+  const traces = userTraces()
+  const bg = bgTraces()
+  const hiddenClicks = all.length - traces.length - bg.length
+  if (!all.length) {
     el.innerHTML = '<div class="hint">点击页面上的按钮，这里会出现一条链路</div>'
     return
   }
-  if (!traces.length) {
-    el.innerHTML = '<div class="hint">只有点击事件，还没有请求（点下面「显示纯点击」可以看）</div>'
-    renderClickToggle(el, hiddenClicks)
-    return
-  }
   const active = activeTrace()
-  el.innerHTML = traces.map((t) => {
+  const card = (t, extraClass = '') => {
     const req = t.nodes.find((n) => n.kind === 'request')
     const time = new Date(t.startedAt).toLocaleTimeString('zh-CN', { hour12: false })
-    return `<div class="trace ${active && t.id === active.id ? 'active' : ''} ${t.status === 'error' ? 'err' : ''}" data-id="${escapeHtml(t.id)}">
+    return `<div class="trace ${extraClass} ${active && t.id === active.id ? 'active' : ''} ${t.status === 'error' ? 'err' : ''}" data-id="${escapeHtml(t.id)}">
       <div class="t-head"><span>${time}</span><span>${t.nodes.length} 节点${t.backends && t.backends.length ? ` · ${t.backends.length} 接口 · ${t.backends[0].nodes.length} 方法` : ''}${t.status === 'error' ? ' · 异常' : ''}</span></div>
       <div class="t-url">${escapeHtml(req ? `${req.meta.method} ${shortUrl(req.meta.url)}` : t.reason || '—')}</div>
     </div>`
-  }).join('')
+  }
+  let html = ''
+  if (!traces.length) html += '<div class="hint">还没有用户操作触发的链路（点下面「显示纯点击」或「后台请求」看看）</div>'
+  else html += traces.map((t) => card(t)).join('')
+  if (bg.length && view.showBg) html += bg.map((t) => card(t, 'bg')).join('')
+  el.innerHTML = html
   el.querySelectorAll('.trace').forEach((node) => {
     node.onclick = () => { view.traceId = node.dataset.id; view.selected = null; view._follow = false; renderTraces(); renderGraph() }
   })
+  if (bg.length) {
+    const bar = document.createElement('button')
+    bar.id = 'btn-bg'
+    bar.className = 'trace-toggle'
+    bar.textContent = view.showBg ? `隐藏后台请求（${bg.length}）` : `后台请求（${bg.length}）`
+    bar.onclick = () => {
+      view.showBg = !view.showBg
+      try { localStorage.setItem('apiflow.showBg', view.showBg ? '1' : '0') } catch {}
+      if (!view.showBg && view.traceId && !userTraces().some((t) => t.id === view.traceId)) {
+        view.traceId = null
+        view.selected = null
+      }
+      renderTraces()
+      renderGraph()
+    }
+    el.appendChild(bar)
+  }
   renderClickToggle(el, hiddenClicks)
 }
 

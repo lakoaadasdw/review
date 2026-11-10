@@ -85,6 +85,8 @@ main { display: flex; flex: 1; min-height: 0; }
 .trace .t-url { margin-top: 2px; font-size: 12px; color: var(--text); word-break: break-all; }
 .trace.err { border-left: 3px solid var(--err); }
 .trace.err .t-head { color: var(--err); }
+.trace.bg { opacity: .7; }
+.trace.bg .t-url::before { content: '后台 · '; color: var(--muted); }
 
 #canvas {
   position: relative;
