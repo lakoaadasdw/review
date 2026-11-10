@@ -13,3 +13,7 @@ tools/out/
 
 # 效果截图（含本机业务数据，不入库）
 docs/
+
+# Python 缓存
+__pycache__/
+*.pyc
