@@ -266,24 +266,38 @@ export async function pingLLM(conf) {
   const base = String(conf.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '')
   const url = /\/chat\/completions$/.test(base) ? base : `${base}/chat/completions`
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 20000)
+  const timer = setTimeout(() => ctrl.abort(), 25000)
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${conf.apiKey}` },
       body: JSON.stringify({
         model: conf.model || 'deepseek-chat',
-        max_tokens: 16,
+        max_tokens: 200,
         temperature: 0,
-        messages: [{ role: 'user', content: 'ping，只回 ok' }],
+        messages: [{ role: 'user', content: '用一句话回答：1+1 等于几？' }],
       }),
       signal: ctrl.signal,
     })
     const text = await res.text()
     if (!res.ok) throw new Error(`HTTP ${res.status} ${text.slice(0, 160)}`)
-    let parsed = null
-    try { parsed = JSON.parse(text) } catch {}
-    return (parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].message && parsed.choices[0].message.content) || text.slice(0, 60)
+    let data = null
+    try { data = JSON.parse(text) } catch {}
+    const choice = data && data.choices && data.choices[0]
+    const msg = (choice && choice.message) || {}
+    const content = String(msg.content || '').trim()
+    const reasoning = String(msg.reasoning_content || '').trim()
+    const finish = (choice && choice.finish_reason) || ''
+    let quote = content
+    if (!quote && reasoning) quote = '（推理模型，无正文）' + reasoning.slice(0, 30)
+    if (!quote) quote = `无正文（finish_reason=${finish || '未知'}，response.object=${(data && data.object) || '?'}）`
+    return {
+      quote,
+      model: (data && data.model) || conf.model,
+      finish,
+      object: (data && data.object) || '',
+      empty: !content,
+    }
   } finally {
     clearTimeout(timer)
   }

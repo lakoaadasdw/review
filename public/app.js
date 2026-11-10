@@ -1669,8 +1669,10 @@ if ($('btn-cfg')) {
     cfgSay('测试中…')
     try {
       const out = await api('/api/explain/test', 'POST', {})
-      if (out.ok) cfgSay(`连接正常 · ${out.model} · ${out.ms}ms · 回包「${out.sample || ''}」`, 'ok')
-      else cfgSay(`连接失败：${out.error}`, 'bad')
+      if (out.ok) {
+        const extra = out.empty ? '（模型回正文为空，但链路可用）' : ''
+        cfgSay(`连接正常 · ${out.model} · ${out.ms}ms · 实测回答「${out.sample || ''}」${extra}`, 'ok')
+      } else cfgSay(`连接失败：${out.error}`, 'bad')
     } catch (err) {
       cfgSay('测试失败：' + err.message, 'bad')
     } finally {

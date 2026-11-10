@@ -1094,8 +1094,15 @@ const server = createServer(async (req, res) => {
       if (!CONFIG.explain.apiKey) return sendJson(res, 200, { ok: false, error: '还没配置 key' })
       const t0 = Date.now()
       try {
-        const sample = await pingLLM(CONFIG.explain)
-        return sendJson(res, 200, { ok: true, ms: Date.now() - t0, model: CONFIG.explain.model, sample: String(sample).slice(0, 60) })
+        const ping = await pingLLM(CONFIG.explain)
+        return sendJson(res, 200, {
+          ok: true,
+          ms: Date.now() - t0,
+          model: ping.model || CONFIG.explain.model,
+          sample: String(ping.quote || '').slice(0, 80),
+          finish: ping.finish || '',
+          empty: !!ping.empty,
+        })
       } catch (e) {
         return sendJson(res, 200, { ok: false, ms: Date.now() - t0, model: CONFIG.explain.model, error: String((e && e.message) || e) })
       }
