@@ -30,7 +30,7 @@ function methodColorRef(key) {
   return { idx, color: METHOD_COLORS[idx] }
 }
 
-const view = { data: null, traceId: null, selected: null, expanded: new Map(), collapsed: new Map(), timer: null, dragPos: new Map(), motion: localStorage.getItem('apiflow.motion') !== '0', paramsOn: localStorage.getItem('apiflow.params') !== '0', showClicks: localStorage.getItem('apiflow.showClicks') === '1', sideTab: localStorage.getItem('apiflow.sideTab') || 'chains', hidePollReq: localStorage.getItem('apiflow.hidePollReq') !== '0', _newestTraceId: null, _pbar: '', seenAt: {}, seenCount: {}, _sig: '', explain: { traceId: '', loading: false, items: {}, source: '', error: '' } }
+const view = { data: null, traceId: null, selected: null, expanded: new Map(), collapsed: new Map(), timer: null, dragPos: new Map(), motion: localStorage.getItem('apiflow.motion') !== '0', paramsOn: localStorage.getItem('apiflow.params') !== '0', showClicks: localStorage.getItem('apiflow.showClicks') === '1', sideTab: localStorage.getItem('apiflow.sideTab') || 'chains', hidePollReq: localStorage.getItem('apiflow.hidePollReq') !== '0', _newestTraceId: null, _pbar: '', seenAt: {}, seenCount: {}, _sig: '', explain: { traceId: '', sig: '', loading: false, items: {}, source: '', error: '' } }
 
 const $ = (id) => document.getElementById(id)
 
@@ -48,9 +48,15 @@ function expDetailOf(nodeId) {
 async function ensureExplain(trace) {
   if (!trace || !trace.backends || !trace.backends.length) return
   if (!view.explain) view.explain = { traceId: '', loading: false, items: {} }
-  if (view.explain.traceId === trace.id || view.explain.loading) return
+  // 后端方法树是「请求返回后才挂上来」的，可能比第一次渲染晚；用节点集合指纹判断要不要补请求
+  const ids = []
+  for (const b of trace.backends) for (const n of b.nodes || []) if (n && n.method) ids.push(n.id)
+  if (!ids.length) return
+  const sig = `${trace.id}|${ids.length}|${ids[ids.length - 1] || ''}`
+  if (view.explain.sig === sig || view.explain.loading) return
   view.explain.loading = true
   view.explain.traceId = trace.id
+  view.explain.sig = sig
   try {
     const out = await api('/api/explain', 'POST', { traceId: trace.id })
     view.explain.items = (out && out.items) || {}
@@ -1393,7 +1399,7 @@ function expHtml(nodeId) {
   const ex = view.explain || {}
   const it = expDetailOf(nodeId)
   if (!it) {
-    if (ex.loading) return '<div class="expbox"><b>解释</b><div class="muted">正在生成…</div></div>'
+    if (ex.loading) return '<div class="expbox"><b>解释</b><div class="muted">正在生成…（首次打开约 5–15 秒，之后直接读缓存）</div></div>'
     if (ex.error) return `<div class="expbox"><b>解释</b><div class="muted">生成失败：${escapeHtml(ex.error)}</div></div>`
     return ''
   }
@@ -1849,4 +1855,5 @@ if ($('btn-cfg')) {
     }
   }
 }
+
 
